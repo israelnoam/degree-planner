@@ -14,8 +14,18 @@ const FS_PROFILES = {
   procedures: '🪜 סד״פ ושיטות פתרון',
   tables: '▦ טבלאות והשוואות',
   proofs: '📜 משפטים והוכחות',
-  code: '💻 אלגוריתמים וקוד',
+  code: '💻 קוד',
 };
+// What each choice asks the AI for (also shown as a tooltip on the checkbox).
+const FS_PROFILE_HINTS = {
+  figures: 'איורים ושרטוטים בסגנון חומרי הקורס',
+  derivations: 'נוסחאות, זהויות ופיתוחים קצרים',
+  procedures: 'סדר פעולות לכל סוג שאלה במבחן, כולל איך מזהים את סוג הבעיה ובאיזו שיטה פותרים',
+  tables: 'טבלאות מקרים, השוואות וסימנים',
+  proofs: 'ניסוח משפטים, תנאים ורעיון ההוכחה',
+  code: 'קטעי קוד ותחביר (פייתון, MATLAB…) בגופן קוד',
+};
+const fsProfileChecks = sel => Object.entries(FS_PROFILES).map(([k, l]) => `<label class="chip" title="${esc(FS_PROFILE_HINTS[k] || '')}"><input type="checkbox" name="p" value="${k}" ${sel.includes(k) ? 'checked' : ''}> ${l}</label>`).join('');
 const FS_SOURCES = [
   ['exams', '📝 מבחנים קודמים', 'הכי חשוב: מה שחוזר במבחנים מקבל עדיפות ומקום'],
   ['material', '📚 חומרי הקורס', 'סילבוס, דפי נוסחאות רשמיים, ספר הקורס'],
@@ -36,11 +46,17 @@ const FS_BLOCKS = {
   figure: ['איור (SVG)', [['svg', 'code', 'קוד SVG'], ['caption', 'text', 'כיתוב'], ['width', 'number', 'רוחב (% מהעמודה)']]],
   table: ['טבלה', [['head', 'row', 'כותרות (מופרדות ב- | )'], ['rows', 'rows', 'שורה לכל שורה, תאים מופרדים ב- | ']]],
   symbols: ['טבלת סימנים ויחידות', [['rows', 'rows', 'סימן | משמעות | יחידות (שורה לכל סימן)']]],
+  code: ['קטע קוד', [['title', 'text', 'כותרת'], ['code', 'code', 'קוד (מוצג כמו שהוא, משמאל לימין)']]],
 };
 
 let fsOpenId = null;
 let fsSelSection = null;
 let fsLayoutToken = 0;
+// AI generation in progress or failed, per sheet: { state: 'run' | 'error', html, files, usePangea, useDrive }.
+// Kept here (not in the page) so a redraw of the editor can't wipe the progress or the error.
+const fsGen = {};
+// A sheet with no blocks at all is "empty": nothing to print, export or import.
+const fsHasContent = s => (s?.sections || []).some(x => (x.blocks || []).length);
 
 const fsSheets = () => Store.list('sheet').sort((a, b) => (b.u || 0) - (a.u || 0));
 const fsSheet = () => (fsOpenId ? Store.get('sheet', fsOpenId) : null);
@@ -114,6 +130,7 @@ function fsBlockHtml(b) {
       <tbody>${(b.rows || []).map(r => `<tr>${r.map(c => `<td>${fsCell(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
     case 'symbols': return `<table class="fb-table fb-sym"><thead><tr><th>סימן</th><th>משמעות</th><th>יחידות</th></tr></thead>
       <tbody>${(b.rows || []).map(([s, m, u]) => `<tr><td>${fsTex(s)}</td><td>${fsMd(m)}</td><td>${u ? fsTex(u) : ''}</td></tr>`).join('')}</tbody></table>`;
+    case 'code': return `<div class="fb-code">${b.title ? `<b>${fsMd(b.title)}</b>` : ''}<pre dir="ltr">${esc(b.code || '')}</pre></div>`;
     default: return `<div class="fb-text">${fsMd(b.md || '')}</div>`;
   }
 }
@@ -362,17 +379,52 @@ function renderSheetEditor(root, sheet) {
     const sec = e.target.closest('.fs-sec');
     if (sec) fsSectionDialog(sheet, +sec.dataset.sec);
   };
+  const gen = fsGen[sheet.id];
+  if (!secs.length) {
+    // Nothing to lay out: say so and offer the ways to fill it, instead of a blank page that looks "done".
+    fsLayoutToken++;
+    $('#fsStatus', root).innerHTML = gen ? gen.html : '<span class="bad">⚠️ הנוסחאון ריק: עוד אין בו תוכן</span>';
+    pagesHost.innerHTML = fsBlankHtml(sheet, gen);
+    pagesHost.style.zoom = '';
+    pagesHost.onclick = null;
+    $('#fsBlankAi', root)?.addEventListener('click', () => fsGenerateDialog(sheet));
+    $('#fsBlankRetry', root)?.addEventListener('click', () => fsGenerate(sheet.id, gen.files, gen.usePangea, gen.useDrive));
+    $('#fsBlankBrief', root)?.addEventListener('click', async () => { await navigator.clipboard.writeText(fsBriefPrompt(sheet)); toast('הבריף הועתק. שלח אותו ל-Claude יחד עם חומרי הקורס, ואז "ייבוא JSON".'); });
+    $('#fsBlankImport', root)?.addEventListener('click', () => fsImportJson(sheet.id));
+    $('#fsBlankKey', root)?.addEventListener('click', () => go('cv'));
+    return;
+  }
   fsLayout(sheet, pagesHost).then(info => {
     if (!info) return;
     fsFitPreview();
     fsHighlightSection();
     const st = $('#fsStatus');
     if (!st) return;
+    if (gen) { st.innerHTML = gen.html; return; }
     const over = info.pages > info.target;
     st.innerHTML = `<span class="${over ? 'bad' : 'ok'}">${over ? '⚠️' : '✓'} ${info.pages} ${info.pages === 1 ? 'עמוד' : 'עמודים'} מתוך ${info.target}</span>
       <span class="muted">· גודל גופן ${Math.round(info.scale * 100)}%${sheet.autofit !== false ? ' (אוטומטי)' : ''}</span>
       ${over ? `<span class="muted">· חורג. הסתר בלוקים, קצר, או בקש מ-AI "לקצר כדי שייכנס ל-${info.target} עמודים".</span>` : ''}`;
   });
+}
+
+// The empty sheet: what happened, and how to fill it.
+function fsBlankHtml(sheet, gen) {
+  if (gen?.state === 'run') return `<div class="fs-blank"><div class="fs-blank-ic">✨</div><h3>הנוסחאון בבנייה</h3><p id="fsGenMsg">${gen.html}</p><p class="muted small">אפשר להמשיך לעבוד באפליקציה. אל תסגור אותה עד שהנוסחאון מוכן.</p></div>`;
+  const hasKey = !!claudeKey();
+  return `<div class="fs-blank">
+    <div class="fs-blank-ic">${gen ? '⚠️' : '📄'}</div>
+    <h3>${gen ? 'היצירה לא הושלמה' : 'הנוסחאון עדיין ריק'}</h3>
+    ${gen ? `<p>${gen.html}</p>` : `<p class="muted">נשמרו רק ההגדרות (קורס, עמודים, אופי ודגשים). התוכן עצמו עוד לא נוצר.</p>`}
+    <div class="fs-blank-acts">
+      ${gen ? '<button class="btn primary" type="button" id="fsBlankRetry">🔁 נסה שוב עם אותם חומרים</button>' : ''}
+      <button class="btn ${gen ? '' : 'primary'}" type="button" id="fsBlankAi" ${hasKey ? '' : 'disabled'}>✨ צור עם AI</button>
+      <button class="btn" type="button" id="fsBlankBrief">📋 העתק בריף ל-Claude</button>
+      <button class="btn" type="button" id="fsBlankImport">📥 ייבוא JSON מוכן</button>
+    </div>
+    ${hasKey ? '' : '<p class="muted small">ל"צור עם AI" צריך מפתח API של Anthropic. <button class="btn small" type="button" id="fsBlankKey">להגדרות AI</button></p>'}
+    <p class="muted small">בלי מפתח: העתק את הבריף, שלח אותו ל-Claude עם חומרי הקורס, וייבא את קובץ ה-JSON שמתקבל. אפשר גם לבנות ידנית עם "＋ פרק".</p>
+  </div>`;
 }
 
 function fsHighlightSection() {
@@ -522,7 +574,7 @@ function fsProfileDialog(sheet) {
   const cur = sheet.profile || [];
   openModal(`<h2>🧭 אופי הקורס</h2>
     <p class="muted">קובע מה הנוסחאון ידגיש: בקורס כמו מכניקת מוצקים איורים הם חלק מהעניין, במד״ר הם מיותרים.</p>
-    <div class="fs-checks">${Object.entries(FS_PROFILES).map(([k, l]) => `<label class="chip"><input type="checkbox" name="p" value="${k}" ${cur.includes(k) ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+    <div class="fs-checks">${fsProfileChecks(cur)}</div>
     <div class="actions"><button class="btn" value="cancel" formnovalidate>ביטול</button><button class="btn primary" value="save">שמור</button></div>`, (action, fd) => {
     if (action === 'save') Store.put('sheet', sheet.id, { profile: fd.getAll('p') });
   });
@@ -538,7 +590,10 @@ function fsMoreDialog(sheet) {
       <button class="btn danger" type="button" id="fmDelete">🗑️ מחק נוסחאון</button>
     </div>
     <div class="actions"><button class="btn" value="cancel">סגור</button></div>`, () => {}, form => {
-    $('#fmExport', form).onclick = () => fsDownload(`${sheet.title || 'נוסחאון'}.json`, JSON.stringify(fsExportable(sheet), null, 1));
+    $('#fmExport', form).onclick = () => {
+      if (!fsHasContent(sheet)) toast('שים לב: הנוסחאון ריק. הקובץ מכיל רק את ההגדרות והבריף, בלי תוכן.');
+      fsDownload(`${sheet.title || 'נוסחאון'}.json`, JSON.stringify(fsExportable(sheet), null, 1));
+    };
     $('#fmImport', form).onclick = () => { $('#modal').close(); fsImportJson(sheet.id); };
     $('#fmBrief', form).onclick = async () => { await navigator.clipboard.writeText(fsBriefPrompt(sheet)); toast('הבריף הועתק. הדבק אותו ל-Claude יחד עם קבצי הקורס.'); };
     $('#fmFooter', form).onchange = e => Store.put('sheet', sheet.id, { footer: e.target.value.trim() });
@@ -561,6 +616,7 @@ function fsImportJson(intoId) {
     try {
       const data = JSON.parse(await input.files[0].text());
       if (!Array.isArray(data.sections)) throw new Error('אין בקובץ "sections"');
+      if (!fsHasContent(data)) throw new Error('הקובץ ריק: יש בו רק הגדרות, בלי פרקים ונוסחאות. זו טיוטה שעוד לא מולאה');
       const id = intoId || uid();
       const prev = intoId ? Store.get('sheet', intoId) : null;
       Store.put('sheet', id, { pages: 2, cols: 3, theme: 'standard', ...(prev ? fsExportable(prev) : {}), ...data });
@@ -574,7 +630,7 @@ function fsImportJson(intoId) {
 // ---------- print / PDF ----------
 function fsPrint() {
   const pages = $$('#fsSheet .fs-page');
-  if (!pages.length) return;
+  if (!pages.length || !fsHasContent(fsSheet())) return toast('הנוסחאון ריק: אין עדיין מה להדפיס.');
   const holder = document.createElement('div');
   holder.id = 'fsPrintRoot';
   pages.forEach(p => { const c = p.cloneNode(true); c.classList.remove('over'); holder.appendChild(c); });
@@ -590,6 +646,96 @@ function fsPrint() {
 }
 
 // ---------- new sheet: the brief ----------
+const fsSourcesHtml = () => `<div class="fs-sources">${FS_SOURCES.map(([k, l, d]) => `<label class="fs-src"><span>${l}${d ? `<small class="muted">${d}</small>` : ''}</span><input type="file" name="src_${k}" multiple accept=".pdf,.docx,.txt,.md,.tex"></label>`).join('')}
+        <label class="fs-src"><span>💡 נוסחאון קיים לדוגמה והשראה<small class="muted">הסגנון והמבנה שלו ילמדו</small></span><input type="file" name="src_inspire" multiple accept=".pdf,.docx,.txt,.md,.tex,.json"></label>
+        <label class="fs-src" id="fsPangeaRow"><span>💧 סיכומי פנגייה לקורס<small class="muted" id="fsPangeaNote">בודק…</small></span><input type="checkbox" name="pangea" id="fsPangea" disabled></label>
+        <label class="fs-src" id="fsDriveRow"><span>📁 תיקיית ה-Drive של הקורס<small class="muted" id="fsDriveNote">בודק…</small></span><input type="checkbox" name="cdrive" id="fsDrive" disabled></label>
+      </div>`;
+
+// ---------- the course's Drive folder as a source ----------
+// The folder linked to the course (Tools → 📁 Drive). Each file is sorted into a source kind by
+// its sub-folder and name; the first rule that matches wins, anything else is course material.
+const FS_DRIVE_RULES = [
+  ['inspire', /נוסחאון/],
+  ['material', /formula|נוסחאות|סילבוס|syllabus/i],
+  ['exams', /מבח|בחינ|מועד|בוחן|exam|moed|quiz/i],
+  ['hw', /ש["״']?ב\b|שיעורי.?בית|תרגילי?.?בית|גיליו|homework|\bhw/i],
+  ['tutorials', /תרגול|tutorial|recitation/i],
+  ['slides', /הרצא|שקפ|מצגת|lecture|slides/i],
+  ['summaries', /סיכו|פנגי|summar|notability/i],
+];
+const FS_DRIVE_MAX = { exams: 14, material: 8, summaries: 10, slides: 14, tutorials: 16, hw: 8, inspire: 2 };
+const FS_DRIVE_GDOC = 'application/vnd.google-apps.document';
+const fsDriveCanRead = () => Sync.connected && (Sync.hasScope('driveRead') || Sync.hasScope('driveWrite'));
+const fsDriveKind = f => (FS_DRIVE_RULES.find(([, re]) => re.test(`${f.cat || ''} / ${f.name}`)) || ['material'])[0];
+// The files worth reading (documents up to 20MB), newest first, a few per kind.
+function fsDrivePlan(code) {
+  const plan = {};
+  const files = (CDrive.entry(code)?.files || [])
+    .filter(f => (/\.(pdf|docx|txt|md|tex)$/i.test(f.name) || f.mime === FS_DRIVE_GDOC) && f.size <= 20e6)
+    .sort((a, b) => String(b.mod).localeCompare(String(a.mod)));
+  for (const f of files) {
+    const k = fsDriveKind(f);
+    if ((plan[k] = plan[k] || []).length < FS_DRIVE_MAX[k]) plan[k].push(f);
+  }
+  return plan;
+}
+async function fsDriveDownload(f) {
+  const gdoc = f.mime === FS_DRIVE_GDOC;
+  const res = await Sync.api(`${DRIVE_FILES}/${f.id}${gdoc ? '/export?mimeType=text/plain' : '?alt=media'}`);
+  const blob = await res.blob();
+  return new File([blob], gdoc ? f.name + '.txt' : f.name, { type: gdoc ? 'text/plain' : blob.type });
+}
+// Reading file contents needs one more Google permission than listing their names.
+function fsDriveNeedsAccess() {
+  if (fsDriveCanRead()) return false;
+  if (confirm('כדי למשוך את הקבצים מתיקיית הקורס, Google צריך לאשר לאפליקציה לקרוא קבצים מהדרייב שלך (קריאה בלבד). האישור חד-פעמי; אחריו חזור לכאן ולחץ שוב על "צור".\n\nלהמשיך לאישור?')) Sync.authorize(false, ['driveRead']);
+  return true;
+}
+
+function fsPangeaCheck(form, code) {
+  const dNote = $('#fsDriveNote', form), dBox = $('#fsDrive', form);
+  if (dNote && dBox) {
+    const c = courseByCode(code);
+    dBox.disabled = true; dBox.checked = false;
+    const show = () => {
+      if ($('#fsCourse', form) && $('#fsCourse', form).value !== code) return; // the course was changed meanwhile
+      const plan = fsDrivePlan(code), n = Object.values(plan).reduce((s, a) => s + a.length, 0);
+      const names = { exams: 'מבחנים', material: 'חומרי קורס', summaries: 'סיכומים', slides: 'הרצאות', tutorials: 'תרגולים', hw: 'שיעורי בית', inspire: 'נוסחאון' };
+      dNote.textContent = n ? `${n} קבצים: ${Object.entries(plan).map(([k, a]) => `${a.length} ${names[k]}`).join(', ')}${fsDriveCanRead() ? '' : ' (יתבקש אישור קריאה מ-Google)'}` : 'לא נמצאו בתיקייה מסמכים (PDF / Word / טקסט)';
+      dBox.disabled = !n; dBox.checked = !!n;
+    };
+    if (!Sync.connected) dNote.textContent = 'צריך קודם להתחבר ל-Google';
+    else if (!c?.drive) dNote.textContent = 'לא קושרה תיקייה לקורס הזה (כלים ← 📁 תיקיית Drive)';
+    else if (!NB.canRead()) dNote.textContent = 'חסר אישור לקריאת תיקיות הדרייב (כלים ← 📁 Drive)';
+    else {
+      dNote.textContent = 'קורא את התיקייה…';
+      if (CDrive.entry(code)) show();
+      CDrive.scan(code).then(show, () => { if (!CDrive.entry(code)) dNote.textContent = 'לא הצלחתי לקרוא את התיקייה כרגע'; });
+    }
+  }
+  const note = $('#fsPangeaNote', form), box = $('#fsPangea', form);
+  Pangea.load().then(() => {
+    const pg = Pangea.course(code);
+    note.textContent = pg ? `${pg.pages.length} דפים נמצאו` : 'אין סיכומים לקורס הזה';
+    box.disabled = !pg; box.checked = !!pg;
+  }).catch(() => { note.textContent = 'לא זמין כרגע'; });
+}
+const fsReadSources = fd => { const files = {}; for (const [k] of [...FS_SOURCES, ['inspire']]) files[k] = fd.getAll('src_' + k).filter(f => f && f.size); return files; };
+
+// Fill an existing (empty) sheet with AI: same materials as a new sheet, the brief is already saved.
+function fsGenerateDialog(sheet) {
+  openModal(`<h2>✨ יצירת הנוסחאון עם AI</h2>
+    <p class="muted">הבריף כבר שמור (${sheet.pages} עמ׳, ${sheet.cols} עמודות${sheet.brief?.emphasis ? `, דגש: ${esc(sheet.brief.emphasis)}` : ''}). צרף חומרים, או צור בלי חומרים לפי הסילבוס הרגיל של הקורס.</p>
+    <div class="field"><span class="field-label">📂 חומרים (לפי סדר העדיפות). קבצי PDF נקראים במכשיר בלבד.</span>${fsSourcesHtml()}</div>
+    <div class="actions"><button class="btn" value="cancel" formnovalidate>ביטול</button><button class="btn primary" value="ai">✨ צור</button></div>`, (action, fd) => {
+    if (action !== 'ai') return;
+    if (fd.get('cdrive') && fsDriveNeedsAccess()) return false;
+    fsGenerate(sheet.id, fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'));
+  }, form => fsPangeaCheck(form, sheet.course));
+  fsWide();
+}
+
 function fsGuessProfile(name) {
   const n = String(name || '');
   if (/מוצקים|סטטיקה|דינמיקה|תכן|זרימה|מכני|פיזיקה|חוזק|רובוט|תנודות|מעבר חום/.test(n)) return ['figures', 'derivations', 'procedures'];
@@ -620,11 +766,7 @@ function fsNewSheet(courseCode) {
     <label class="field"><span class="field-label">🚫 מה לא צריך? (מה כבר בראש, מה לא במבחן)</span><textarea name="skip" rows="2" placeholder="למשל: בלי טריגונומטריה בסיסית; פרק 9 לא למבחן"></textarea></label>
     <label class="field"><span class="field-label">📌 כללי המבחן ודברים נוספים</span><textarea name="rules" rows="2" placeholder="למשל: דף דו-צדדי, מודפס בצבע; מותר מחשבון"></textarea></label>
     <div class="field"><span class="field-label">📂 חומרים (לפי סדר העדיפות). קבצי PDF נקראים במכשיר בלבד.</span>
-      <div class="fs-sources">${FS_SOURCES.map(([k, l, d]) => `<label class="fs-src"><span>${l}${d ? `<small class="muted">${d}</small>` : ''}</span><input type="file" name="src_${k}" multiple accept=".pdf,.docx,.txt,.md,.tex"></label>`).join('')}
-        <label class="fs-src"><span>💡 נוסחאון קיים לדוגמה והשראה<small class="muted">הסגנון והמבנה שלו ילמדו</small></span><input type="file" name="src_inspire" multiple accept=".pdf,.docx,.txt,.md,.tex,.json"></label>
-        <label class="fs-src" id="fsPangeaRow"><span>💧 סיכומי פנגייה לקורס<small class="muted" id="fsPangeaNote">בודק…</small></span><input type="checkbox" name="pangea" id="fsPangea" disabled></label>
-      </div>
-      <p class="muted small">☁️ בקרוב: חיבור לתיקיית הקורס ב-Google Drive (בוחרים תיקייה, והאפליקציה רואה רק אותה).</p>
+      ${fsSourcesHtml()}
     </div>
     <div class="actions">
       <button class="btn" value="cancel" formnovalidate>ביטול</button>
@@ -642,27 +784,21 @@ function fsNewSheet(courseCode) {
     const id = uid();
     if (action === 'draft') {
       Store.put('sheet', id, sheet);
-      navigator.clipboard?.writeText(fsBriefPrompt(sheet)).then(() => toast('נוצרה טיוטה והבריף הועתק. שלח אותו ל-Claude יחד עם החומרים, ואז "ייבוא JSON".'));
+      navigator.clipboard?.writeText(fsBriefPrompt(sheet)).then(() => toast('נוצרה טיוטה ריקה והבריף הועתק. שלח אותו ל-Claude יחד עם החומרים, ואז "ייבוא JSON".'));
       fsOpenId = id; go('formula');
       return;
     }
     if (action !== 'ai') return;
-    const files = {};
-    for (const [k] of [...FS_SOURCES, ['inspire']]) files[k] = fd.getAll('src_' + k).filter(f => f && f.size);
+    if (fd.get('cdrive') && fsDriveNeedsAccess()) return false;
     Store.put('sheet', id, sheet);
     fsOpenId = id; go('formula');
-    fsGenerate(id, files, !!fd.get('pangea'));
+    fsGenerate(id, fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'));
   }, form => {
     const sel = $('#fsCourse', form);
     const drawProf = () => {
       const guess = fsGuessProfile(courseLabel(sel.value));
-      $('#fsProf', form).innerHTML = Object.entries(FS_PROFILES).map(([k, l]) => `<label class="chip"><input type="checkbox" name="p" value="${k}" ${guess.includes(k) ? 'checked' : ''}> ${l}</label>`).join('');
-      const note = $('#fsPangeaNote', form), box = $('#fsPangea', form);
-      Pangea.load().then(() => {
-        const pg = Pangea.course(sel.value);
-        note.textContent = pg ? `${pg.pages.length} דפים נמצאו` : 'אין סיכומים לקורס הזה';
-        box.disabled = !pg; box.checked = !!pg;
-      }).catch(() => { note.textContent = 'לא זמין כרגע'; });
+      $('#fsProf', form).innerHTML = fsProfileChecks(guess);
+      fsPangeaCheck(form, sel.value);
     };
     sel.onchange = drawProf;
     drawProf();
@@ -680,6 +816,8 @@ const FS_STYLE_GUIDE = `STYLE (the student's own standard theme, learned from th
 - Short worked chain as "example" labelled "דוגמת בזק" using \\Rightarrow.
 - Traps students fall into: "callout" variant "trap" (titled "קיר הבושה - מלכודות קריטיות:"). Key emphasis: variant "tip" (title "דגש: ...").
 - Tables for comparisons/cases (beam load cases, integral tables, Laplace pairs…). A "symbols" table when a topic has many variables.
+- Profile "procedures": a "steps" block per exam question type (what to do, in order), and how to recognise the problem type and choose the method (a table "סימן זיהוי | שיטה"). No programming syntax here.
+- Profile "code": real code snippets and syntax in "code" blocks (monospace, left-to-right), short and exam-relevant. Never put code in a sheet whose profile lacks "code".
 - Dense, exam-ready, no fluff. Vectors underlined (\\underline{r}) when the course does so.
 FIGURES (only when the course profile includes "figures"): draw your own clean SVG (viewBox, ~240x150), white background, black 1.2px lines, blue #1d4ed8 for geometry/vectors, red #dc2626 for forces/loads, labels as <text> with font-family="KaTeX_Math, serif" font-style="italic". Model them on the diagrams in the course material (free-body diagrams, beams, supports, Mohr's circle, cross-sections). No figures for courses without "figures".`;
 
@@ -689,7 +827,7 @@ const FS_BLOCK_SCHEMA = {
     t: { type: 'string', enum: Object.keys(FS_BLOCKS) },
     md: { type: 'string' }, label: { type: 'string' }, tex: { type: 'string' }, note: { type: 'string' },
     title: { type: 'string' }, variant: { type: 'string', enum: ['tip', 'trap', 'note'] }, style: { type: 'string', enum: ['square', 'bullet', 'num'] },
-    items: { type: 'array', items: { type: 'string' } }, svg: { type: 'string' }, caption: { type: 'string' }, width: { type: 'number' },
+    items: { type: 'array', items: { type: 'string' } }, code: { type: 'string' }, svg: { type: 'string' }, caption: { type: 'string' }, width: { type: 'number' },
     head: { type: 'array', items: { type: 'string' } }, rows: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
   },
 };
@@ -769,6 +907,7 @@ function fsAiDialog(sheet) {
     fsAiCall(`Formula sheet "${sheet.title}" (course: ${courseLabel(sheet.course)}, ${sheet.pages} pages × ${sheet.cols} columns, profile: ${(sheet.profile || []).join(', ')}).
 ${scope === 'all' ? 'The whole sheet' : 'One section of it'}:\n${JSON.stringify({ sections: part })}\n\nThe student asks: ${ask}\n\nReturn {"sections":[...]} replacing ${scope === 'all' ? 'all sections' : 'that one section (you may return more than one if splitting makes sense)'}.`, FS_SECTIONS_SCHEMA, 32000)
       .then(out => {
+        if (!fsHasContent(out)) throw new Error('ה-AI החזיר תשובה ריקה. הנוסחאון לא שונה; נסה שוב או נסח את הבקשה אחרת.');
         const before = structuredClone(secs);
         const next = scope === 'all' ? out.sections : [...secs.slice(0, +scope), ...out.sections, ...secs.slice(+scope + 1)];
         fsPutSections(sheet, next.map(s => ({ id: fsId(), ...s })));
@@ -783,11 +922,39 @@ ${scope === 'all' ? 'The whole sheet' : 'One section of it'}:\n${JSON.stringify(
 }
 
 // Full generation from the brief and the files (text is read on the device).
-async function fsGenerate(id, files, usePangea) {
-  const setStatus = html => { const st = $('#fsStatus'); if (st && fsOpenId === id) st.innerHTML = html; };
+async function fsGenerate(id, files, usePangea, useDrive) {
+  if (fsGen[id]?.state === 'run') return toast('הנוסחאון הזה כבר בבנייה…');
+  const given = files; // what you attached by hand: a retry starts from these again
+  // The status lives in fsGen, so it survives every redraw of the editor (sync, edits, tab switches).
+  const setStatus = (html, state = 'run') => {
+    fsGen[id] = { state, html, files: given, usePangea, useDrive };
+    if (fsOpenId !== id || currentView !== 'formula') return;
+    const st = $('#fsStatus'); if (st) st.innerHTML = html;
+    const msg = $('#fsGenMsg');
+    if (msg && state === 'run') msg.innerHTML = html; else if ($('#fsSheet .fs-blank')) render();
+  };
   try {
+    setStatus('<span class="muted">📖 מכין את החומרים…</span>');
     const sheet = Store.get('sheet', id);
     const parts = [];
+    const driveFailed = [];
+    if (useDrive) {
+      // The course's Drive folder: downloaded here, then read exactly like files attached by hand.
+      if (!fsDriveCanRead()) throw new Error('חסר אישור לקריאת קבצים מהדרייב. פתח שוב "צור עם AI" ואשר את הבקשה של Google.');
+      if (!Sync.token()) throw new Error('החיבור ל-Google פג. התחבר מחדש (הכפתור למעלה) ונסה שוב.');
+      await CDrive.scan(sheet.course).catch(() => {});
+      const plan = fsDrivePlan(sheet.course);
+      const total = Object.values(plan).reduce((s, a) => s + a.length, 0);
+      files = Object.fromEntries(Object.entries(files || {}).map(([k, a]) => [k, [...a]]));
+      let i = 0;
+      for (const [k, list] of Object.entries(plan)) {
+        for (const f of list) {
+          setStatus(`<span class="muted">⬇️ מוריד מהדרייב ${++i}/${total}: ${esc(f.name)}</span>`);
+          try { (files[k] = files[k] || []).push(await fsDriveDownload(f)); } catch (e) { if (e.auth) throw new Error('החיבור ל-Google פג באמצע ההורדה. התחבר מחדש ונסה שוב.'); driveFailed.push(f.name); }
+        }
+      }
+      if (total && driveFailed.length === total) throw new Error('לא הצלחתי להוריד אף קובץ מתיקיית הדרייב של הקורס.');
+    }
     // Scanned or handwritten PDFs have almost no text: Claude reads those as documents (it sees
     // the pages). They are attached in priority order (past exams first) up to the request limits.
     const docs = [], skipped = [];
@@ -813,6 +980,7 @@ async function fsGenerate(id, files, usePangea) {
       if (text.trim()) parts.push(`<source kind="${k}" label="${esc(l)}">\n${text.slice(0, budget[k])}\n</source>`);
     }
     if (skipped.length) parts.push(`(Not attached, over the size limit: ${skipped.join(', ')})`);
+    if (driveFailed.length) toast(`לא הורדו מהדרייב: ${driveFailed.join(', ')}`);
     if (usePangea) {
       const pg = Pangea.course(sheet.course);
       let text = '';
@@ -824,13 +992,15 @@ async function fsGenerate(id, files, usePangea) {
     }
     setStatus('<span class="muted">✨ Claude בונה את הנוסחאון… (בדרך כלל 1-3 דקות)</span>');
     const prompt = `${fsBriefPrompt(sheet)}\n\nSOURCES:\n${parts.join('\n\n') || '(no files: use your knowledge of the standard Technion syllabus for this course)'}`;
-    const out = await fsAiCall(docs.length ? [...docs, { type: 'text', text: prompt }] : prompt, FS_SHEET_SCHEMA, 48000);
+    const out = await fsAiCall(docs.length ? [...docs, { type: 'text', text: prompt }] : prompt, FS_SHEET_SCHEMA, 64000);
+    if (!fsHasContent(out)) throw new Error('ה-AI החזיר נוסחאון ריק (בלי פרקים). נסה שוב; אם זה חוזר, צרף חומרי קורס או פרט יותר בדגשים.');
     if (skipped.length) toast(`לא נשלחו (גדולים מדי): ${skipped.join(', ')}`);
+    delete fsGen[id];
     Store.put('sheet', id, { title: out.title || sheet.title, profile: out.profile?.length ? out.profile : sheet.profile, sections: out.sections.map(s => ({ id: fsId(), ...s })), coverage: out.coverage || [] });
     toast('✨ הנוסחאון מוכן');
   } catch (e) {
     console.error(e);
-    setStatus(`<span class="bad">היצירה נכשלה: ${aiErrorHtml(e)}</span>`);
+    setStatus(`<span class="bad">היצירה נכשלה: ${aiErrorHtml(e)}</span>`, 'error');
   }
 }
 

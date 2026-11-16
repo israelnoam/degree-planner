@@ -400,7 +400,7 @@ const CDrive = {
           const parent = (it.parents || []).find(p => batch.includes(p));
           // Each folder / file once, even when it sits in more than one parent (no endless loop).
           if (it.mimeType === NB_FOLDER) { if (!names[it.id]) { names[it.id] = [...(names[parent] || []), it.name]; queue.push(it.id); } }
-          else if (!seen.has(it.id) && seen.add(it.id)) files.push({ id: it.id, name: it.name, mod: it.modifiedTime, size: +it.size || 0, thumb: it.thumbnailLink || '', link: it.webViewLink || '', cat: (names[parent] || []).join(' / ') });
+          else if (!seen.has(it.id) && seen.add(it.id)) files.push({ id: it.id, name: it.name, mime: it.mimeType, mod: it.modifiedTime, size: +it.size || 0, thumb: it.thumbnailLink || '', link: it.webViewLink || '', cat: (names[parent] || []).join(' / ') });
         }
       }
       this.load()[code] = { at: Date.now(), folder: c.drive, files };

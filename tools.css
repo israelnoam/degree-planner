@@ -173,6 +173,13 @@ dialog.wide { width: min(980px, 96vw); max-width: 96vw; }
 .fs-theme-standard .fb-table td svg { width: 100%; height: auto; display: block; max-height: 5.5em; }
 .fs-theme-standard b { font-weight: 700; }
 .fb-badsvg { color: #b91c1c; font-size: .9em; }
+.fs-theme-standard .fb-code { margin: .25em 0; }
+.fs-theme-standard .fb-code pre { direction: ltr; text-align: left; font-family: Consolas, "Courier New", monospace; font-size: .82em; line-height: 1.25; white-space: pre-wrap; overflow-wrap: anywhere; margin: .12em 0 0; padding: .3em .5em; background: #f3f4f6; border: 1px solid #c7cbd1; border-radius: 4px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+/* An empty sheet says so, instead of showing a blank page. */
+.fs-blank { max-width: 620px; margin: 24px auto; padding: 26px 22px; text-align: center; background: var(--panel-2); border: 2px dashed var(--line); border-radius: 14px; }
+.fs-blank h3 { margin: 6px 0; }
+.fs-blank-ic { font-size: 2.4rem; }
+.fs-blank-acts { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 14px 0 10px; }
 
 /* ---------- 📐 print: only the pages, A4, full colour ---------- */
 #fsPrintRoot { display: none; }

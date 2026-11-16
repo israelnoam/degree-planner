@@ -28,6 +28,8 @@ const SCOPES = {
 // moving old Notability backups to the Drive trash needs full Drive access.
 const EXTRA_SCOPES = {
   driveWrite: 'https://www.googleapis.com/auth/drive',
+  // The formula-sheet generator reads the documents in a course's Drive folder (read only).
+  driveRead: 'https://www.googleapis.com/auth/drive.readonly',
 };
 
 function lsGet(key, fallback = null) {
