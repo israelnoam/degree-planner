@@ -410,7 +410,7 @@ function renderSheetEditor(root, sheet) {
 
 // The empty sheet: what happened, and how to fill it.
 function fsBlankHtml(sheet, gen) {
-  if (gen?.state === 'run') return `<div class="fs-blank"><div class="fs-blank-ic">✨</div><h3>הנוסחאון בבנייה</h3><p id="fsGenMsg">${gen.html}</p><p class="muted small">אפשר להמשיך לעבוד באפליקציה. אל תסגור אותה עד שהנוסחאון מוכן.</p></div>`;
+  if (gen?.state === 'run') return `<div class="fs-blank"><div class="fs-blank-ic">✨</div><h3>הנוסחאון בבנייה</h3><p id="fsGenMsg">${gen.html}</p><p class="muted small">קודם תכנון, אחר כך כל הפרקים נכתבים בו-זמנית, ואז בדיקה מול המקורות. בדרך כלל 2-5 דקות. אפשר להמשיך לעבוד באפליקציה, רק לא לסגור אותה.</p><div class="fs-blank-acts"><button class="btn small" type="button" data-fsgen-cancel>✖ בטל</button></div></div>`;
   const hasKey = !!claudeKey();
   return `<div class="fs-blank">
     <div class="fs-blank-ic">${gen ? '⚠️' : '📄'}</div>
@@ -853,22 +853,29 @@ const FS_SYSTEM = `You build exam formula sheets (נוסחאון) for Technion s
 ${FS_STYLE_GUIDE}
 The sheet must be specific to THIS course: its notation, its typical exam questions, its traps. Prioritise what past exams actually need.`;
 
-function fsBriefPrompt(sheet) {
+// What the sheet is for and how much room it has (shared by every AI step and by the copied brief).
+function fsBriefTask(sheet) {
   const c = courseByCode(sheet.course);
-  return `${FS_SYSTEM}
-
-TASK: Build the formula sheet for the course "${c?.name || sheet.course}" (${sheet.course}).
-- Space: ${sheet.pages} A4 page(s), ${sheet.cols} columns each, ~10.5px font (roughly ${sheet.pages * sheet.cols * 55} short lines in total). Fill it, don't overflow.
+  return `TASK: Build the formula sheet for the course "${c?.name || sheet.course}" (${sheet.course}).
+- Space: ${sheet.pages} A4 page(s), ${sheet.cols} columns each, ~10.5px font (roughly ${fsLineBudget(sheet)} short lines in total). Fill it, don't overflow.
 - Course profile: ${(sheet.profile || []).map(p => FS_PROFILES[p]).join(', ') || 'decide'}.
 - Emphasise: ${sheet.brief?.emphasis || '-'}
 - Leave out: ${sheet.brief?.skip || '-'}
 - Exam rules / notes: ${sheet.brief?.rules || '-'}
 - Source priority: past exams > course material (syllabus, official sheets) > the student's summaries > lecture slides > tutorials > homework. An attached existing formula sheet is for style and inspiration.
-- Also return "coverage": every syllabus topic with status in / partial / missing (and a short note), so gaps are visible.
 
-OUTPUT: one JSON object: {"title", "profile":[${Object.keys(FS_PROFILES).map(k => `"${k}"`).join('|')}], "sections":[{"title","blocks":[...]}], "coverage":[{"topic","status","note"}]}
 Block types (field "t"): ${Object.entries(FS_BLOCKS).map(([t, [l, f]]) => `${t} (${l}: ${f.map(x => x[0]).join(', ')})`).join('; ')}.
 "rows" is an array of arrays of strings; table cells may hold an inline <svg>.`;
+}
+const fsLineBudget = sheet => Math.round((+sheet.pages || 2) * (+sheet.cols || 3) * 58);
+
+function fsBriefPrompt(sheet) {
+  return `${FS_SYSTEM}
+
+${fsBriefTask(sheet)}
+- Also return "coverage": every syllabus topic with status in / partial / missing (and a short note), so gaps are visible.
+
+OUTPUT: one JSON object: {"title", "profile":[${Object.keys(FS_PROFILES).map(k => `"${k}"`).join('|')}], "sections":[{"title","blocks":[...]}], "coverage":[{"topic","status","note"}]}`;
 }
 
 // Drops the fields a block doesn't use (the schema makes the model send all of them, empty).
@@ -893,37 +900,66 @@ function fsParseJson(text) {
   try { return JSON.parse(text.slice(a, b + 1)); } catch { throw new Error('ה-AI החזיר JSON שבור. נסה שוב.'); }
 }
 
-async function fsAiCall(prompt, schema, maxTokens = 16000) {
+// A request with no sign of life for this long is treated as stuck and stopped.
+const FS_STALL_MS = 4 * 60_000;
+
+// One request to Claude that returns JSON. opts: { maxTokens, effort, signal, onText } (or just maxTokens).
+async function fsAiCall(prompt, schema, opts = {}) {
+  if (typeof opts === 'number') opts = { maxTokens: opts };
+  const { maxTokens = 16000, effort = 'medium', signal, onText } = opts;
   const client = await claudeClient();
   const ask = async strict => {
+    // The format note goes last in the message, so the system prompt and the sources before it
+    // stay identical between requests (that is what lets the API reuse them from its cache).
     const extra = strict
-      ? 'Every block object carries every field of the schema: leave the fields that block type does not use empty ("" for text, [] for lists, 0 for width).'
-      : `Answer with ONE JSON object only (no prose, no code fence), matching this JSON schema; omit the fields a block type does not use:\n${JSON.stringify(schema)}`;
-    const stream = client.beta.messages.stream({
-      model: CV_MODEL,
-      max_tokens: maxTokens,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
-      output_config: { effort: 'medium', ...(strict ? { format: { type: 'json_schema', schema } } : {}) },
-      system: `${FS_SYSTEM}\n${extra}`,
-      // prompt: text, or content blocks (text + PDF documents for scanned material)
-      messages: [{ role: 'user', content: prompt }],
-    });
-    const response = await stream.finalMessage();
-    if (response.stop_reason === 'refusal') throw new Error('הבקשה נדחתה');
-    if (response.stop_reason === 'max_tokens') throw new Error('התשובה נחתכה (ארוכה מדי). נסה בקשה מצומצמת יותר.');
-    const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
-    return fsCleanOut(strict ? JSON.parse(text) : fsParseJson(text));
+      ? 'FORMAT: every block object carries every field of the schema: leave the fields that block type does not use empty ("" for text, [] for lists, 0 for numbers).'
+      : `FORMAT: answer with ONE JSON object only (no prose, no code fence), matching this JSON schema; omit the fields a block type does not use:\n${JSON.stringify(schema)}`;
+    const content = typeof prompt === 'string' ? `${prompt}\n\n${extra}` : [...prompt, { type: 'text', text: extra }];
+    const ac = new AbortController();
+    const stop = () => ac.abort();
+    if (signal?.aborted) stop(); else signal?.addEventListener('abort', stop);
+    let last = Date.now(), stalled = false;
+    const watchdog = setInterval(() => { if (Date.now() - last > FS_STALL_MS) { stalled = true; stop(); } }, 5000);
+    try {
+      const stream = client.beta.messages.stream({
+        model: CV_MODEL,
+        max_tokens: maxTokens,
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default',
+        output_config: { effort, ...(strict ? { format: { type: 'json_schema', schema } } : {}) },
+        system: FS_SYSTEM,
+        // prompt: text, or content blocks (PDF documents for scanned material + text)
+        messages: [{ role: 'user', content }],
+      }, { signal: ac.signal });
+      stream.on?.('streamEvent', () => { last = Date.now(); });
+      if (onText) stream.on?.('text', d => onText(d));
+      const response = await stream.finalMessage();
+      if (response.stop_reason === 'refusal') throw new Error('הבקשה נדחתה');
+      if (response.stop_reason === 'max_tokens') throw new Error('התשובה נחתכה (ארוכה מדי). נסה בקשה מצומצמת יותר.');
+      const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
+      return fsCleanOut(strict ? JSON.parse(text) : fsParseJson(text));
+    } catch (e) {
+      if (stalled) throw new Error('אין תגובה מ-Anthropic כבר 4 דקות, הבקשה נעצרה.');
+      if (signal?.aborted) throw Object.assign(new Error('היצירה בוטלה'), { cancelled: true });
+      throw e;
+    } finally {
+      clearInterval(watchdog);
+      signal?.removeEventListener('abort', stop);
+    }
   };
+  if (fsNoStrict) return ask(false);
   try { return await ask(true); }
   catch (e) {
-    // The API couldn't use the schema (too complex / compile timeout): same request as plain JSON.
+    // The API couldn't use the schema (too complex / compile timeout): same request as plain JSON,
+    // and later requests skip the attempt that is known to fail.
     const msg = String(e?.error?.error?.message || e?.message || '');
-    if (!/grammar|schema|compil/i.test(msg)) throw e;
-    console.warn('formula sheet: structured output unavailable, retrying as plain JSON:', msg);
+    if (e?.cancelled || !/grammar|schema|compil/i.test(msg)) throw e;
+    console.warn('formula sheet: structured output unavailable, using plain JSON:', msg);
+    fsNoStrict = true;
     return ask(false);
   }
 }
+let fsNoStrict = false;
 
 function fsAiDialog(sheet) {
   const secs = sheet.sections || [];
@@ -960,49 +996,69 @@ ${scope === 'all' ? 'The whole sheet' : 'One section of it'}:\n${JSON.stringify(
   });
 }
 
-// Full generation from the brief and the files (text is read on the device).
-async function fsGenerate(id, files, usePangea, useDrive) {
-  if (fsGen[id]?.state === 'run') return toast('הנוסחאון הזה כבר בבנייה…');
-  const given = files; // what you attached by hand: a retry starts from these again
-  // The status lives in fsGen, so it survives every redraw of the editor (sync, edits, tab switches).
-  const setStatus = (html, state = 'run') => {
-    fsGen[id] = { state, html, files: given, usePangea, useDrive };
-    if (fsOpenId !== id || currentView !== 'formula') return;
-    const st = $('#fsStatus'); if (st) st.innerHTML = html;
-    const msg = $('#fsGenMsg');
-    if (msg && state === 'run') msg.innerHTML = html; else if ($('#fsSheet .fs-blank')) render();
-  };
-  try {
-    setStatus('<span class="muted">📖 מכין את החומרים…</span>');
-    const sheet = Store.get('sheet', id);
-    const parts = [];
-    const driveFailed = [];
-    if (useDrive) {
-      // The course's Drive folder: downloaded here, then read exactly like files attached by hand.
-      if (!fsDriveCanRead()) throw new Error('חסר אישור לקריאת קבצים מהדרייב. פתח שוב "צור עם AI" ואשר את הבקשה של Google.');
-      if (!Sync.token()) throw new Error('החיבור ל-Google פג. התחבר מחדש (הכפתור למעלה) ונסה שוב.');
-      await CDrive.scan(sheet.course).catch(() => {});
-      const plan = fsDrivePlan(sheet.course);
-      const total = Object.values(plan).reduce((s, a) => s + a.length, 0);
-      files = Object.fromEntries(Object.entries(files || {}).map(([k, a]) => [k, [...a]]));
-      let i = 0;
-      for (const [k, list] of Object.entries(plan)) {
-        for (const f of list) {
-          setStatus(`<span class="muted">⬇️ מוריד מהדרייב ${++i}/${total}: ${esc(f.name)}</span>`);
-          try { (files[k] = files[k] || []).push(await fsDriveDownload(f)); } catch (e) { if (e.auth) throw new Error('החיבור ל-Google פג באמצע ההורדה. התחבר מחדש ונסה שוב.'); driveFailed.push(f.name); }
-        }
+// ---------- full generation: plan → every section at once → check → fit ----------
+// One request for a whole sheet is slow and gets cut off at the answer-length limit. So: a short
+// plan first, then every section in its own request, all running at the same time, then one check
+// against the sources, then (if it doesn't fit the pages) one round of shortening.
+const FS_GEN_EFFORT = 'high'; // the same for every step: changing it would drop the API's cache of the sources
+const FS_OUTLINE_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['title', 'profile', 'sections', 'coverage'],
+  properties: {
+    title: { type: 'string' },
+    profile: { type: 'array', items: { type: 'string', enum: Object.keys(FS_PROFILES) } },
+    sections: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['title', 'brief', 'lines'], properties: { title: { type: 'string' }, brief: { type: 'string' }, lines: { type: 'integer' } } } },
+    coverage: FS_SHEET_SCHEMA.properties.coverage,
+  },
+};
+const FS_FIXES_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['fixes'],
+  properties: { fixes: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['section', 'block', 'action', 'why', 'data'],
+    properties: { section: { type: 'integer' }, block: { type: 'integer' }, action: { type: 'string', enum: ['replace', 'delete'] }, why: { type: 'string' }, data: FS_BLOCK_SCHEMA } } } },
+};
+const fsWait = (ms, signal) => new Promise((res, rej) => { const t = setTimeout(res, ms); signal?.addEventListener('abort', () => { clearTimeout(t); rej(Object.assign(new Error('היצירה בוטלה'), { cancelled: true })); }); });
+const fsClock = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
+// The running clock and the cancel button of a generation (the editor is redrawn often, so both
+// are wired once here instead of on each draw).
+setInterval(() => { const g = fsGen[fsOpenId]; if (g?.state === 'run') $$('.fs-clock').forEach(el => { el.textContent = fsClock(Date.now() - g.t0); }); }, 1000);
+document.addEventListener('click', e => { if (e.target.closest?.('[data-fsgen-cancel]')) fsGen[fsOpenId]?.cancel?.(); });
+
+// Reads everything you attached (and the Drive folder / Pangea if asked) into text and documents.
+async function fsReadMaterials(sheet, files, usePangea, useDrive, say) {
+  const parts = [];
+  const driveFailed = [];
+  if (useDrive) {
+    // The course's Drive folder: downloaded here, then read exactly like files attached by hand.
+    if (!fsDriveCanRead()) throw new Error('חסר אישור לקריאת קבצים מהדרייב. פתח שוב "צור עם AI" ואשר את הבקשה של Google.');
+    if (!Sync.token()) throw new Error('החיבור ל-Google פג. התחבר מחדש (הכפתור למעלה) ונסה שוב.');
+    await CDrive.scan(sheet.course).catch(() => {});
+    const plan = fsDrivePlan(sheet.course);
+    const total = Object.values(plan).reduce((s, a) => s + a.length, 0);
+    files = Object.fromEntries(Object.entries(files || {}).map(([k, a]) => [k, [...a]]));
+    // Downloads run six at a time.
+    const queue = Object.entries(plan).flatMap(([k, list]) => list.map(f => [k, f]));
+    let done = 0;
+    const got = {};
+    await Promise.all(Array.from({ length: 6 }, async () => {
+      for (let job; (job = queue.shift());) {
+        const [k, f] = job;
+        try { (got[k] = got[k] || []).push(await fsDriveDownload(f)); }
+        catch (e) { if (e.auth) throw new Error('החיבור ל-Google פג באמצע ההורדה. התחבר מחדש ונסה שוב.'); driveFailed.push(f.name); }
+        say(`⬇️ מוריד מהדרייב: ${++done}/${total}`);
       }
-      if (total && driveFailed.length === total) throw new Error('לא הצלחתי להוריד אף קובץ מתיקיית הדרייב של הקורס.');
-    }
-    // Scanned or handwritten PDFs have almost no text: Claude reads those as documents (it sees
-    // the pages). They are attached in priority order (past exams first) up to the request limits.
-    const docs = [], skipped = [];
-    let docPages = 0, docBytes = 0;
-    const budget = { exams: 120000, material: 80000, summaries: 60000, slides: 60000, tutorials: 40000, hw: 30000, inspire: 30000, pangea: 60000 };
-    for (const [k, l] of [...FS_SOURCES, ['inspire', 'existing formula sheet (style/inspiration only)']]) {
-      let text = '';
-      for (const f of files[k] || []) {
-        setStatus(`<span class="muted">📖 קורא ${esc(f.name)}…</span>`);
+    }));
+    for (const [k, list] of Object.entries(got)) (files[k] = files[k] || []).push(...list);
+    if (total && driveFailed.length === total) throw new Error('לא הצלחתי להוריד אף קובץ מתיקיית הדרייב של הקורס.');
+  }
+  // Scanned or handwritten PDFs have almost no text: Claude reads those as documents (it sees
+  // the pages). They are attached in priority order (past exams first) up to the request limits.
+  const docs = [], skipped = [];
+  let docPages = 0, docBytes = 0;
+  const budget = { exams: 120000, material: 80000, summaries: 60000, slides: 60000, tutorials: 40000, hw: 30000, inspire: 30000, pangea: 60000 };
+  for (const [k, l] of [...FS_SOURCES, ['inspire', 'existing formula sheet (style/inspiration only)']]) {
+    let text = '';
+    for (const f of (files || {})[k] || []) {
+      say(`📖 קורא ${esc(f.name)}…`);
+      try {
         if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') {
           const { text: t, pages } = await fsPdfText(f);
           if (t.replace(/\s/g, '').length < pages * 150) { // mostly scans
@@ -1015,31 +1071,148 @@ async function fsGenerate(id, files, usePangea, useDrive) {
           }
           text += `\n--- ${f.name} ---\n${t}`;
         } else text += `\n--- ${f.name} ---\n` + (/\.json$/i.test(f.name) ? await f.text() : await fileToText(f));
-      }
-      if (text.trim()) parts.push(`<source kind="${k}" label="${esc(l)}">\n${text.slice(0, budget[k])}\n</source>`);
+      } catch (e) { console.warn('formula sheet: could not read', f.name, e); skipped.push(f.name); }
     }
-    if (skipped.length) parts.push(`(Not attached, over the size limit: ${skipped.join(', ')})`);
-    if (driveFailed.length) toast(`לא הורדו מהדרייב: ${driveFailed.join(', ')}`);
-    if (usePangea) {
-      const pg = Pangea.course(sheet.course);
-      let text = '';
-      for (const [i, p] of (pg?.pages || []).entries()) {
-        setStatus(`<span class="muted">💧 קורא את פנגייה ${i + 1}/${pg.pages.length}…</span>`);
-        try { text += `\n--- ${p.title} ---\n` + await Pangea.pageText(p.url); } catch {}
-      }
-      if (text.trim()) parts.push(`<source kind="summaries" label="Pangea student summaries">\n${text.slice(0, budget.pangea)}\n</source>`);
+    if (text.trim()) parts.push(`<source kind="${k}" label="${esc(l)}">\n${text.slice(0, budget[k])}\n</source>`);
+  }
+  if (usePangea) {
+    const pg = Pangea.course(sheet.course);
+    let text = '';
+    for (const [i, p] of (pg?.pages || []).entries()) {
+      say(`💧 קורא את פנגייה ${i + 1}/${pg.pages.length}…`);
+      try { text += `\n--- ${p.title} ---\n` + await Pangea.pageText(p.url); } catch {}
     }
-    setStatus('<span class="muted">✨ Claude בונה את הנוסחאון… (בדרך כלל 1-3 דקות)</span>');
-    const prompt = `${fsBriefPrompt(sheet)}\n\nSOURCES:\n${parts.join('\n\n') || '(no files: use your knowledge of the standard Technion syllabus for this course)'}`;
-    const out = await fsAiCall(docs.length ? [...docs, { type: 'text', text: prompt }] : prompt, FS_SHEET_SCHEMA, 64000);
-    if (!fsHasContent(out)) throw new Error('ה-AI החזיר נוסחאון ריק (בלי פרקים). נסה שוב; אם זה חוזר, צרף חומרי קורס או פרט יותר בדגשים.');
-    if (skipped.length) toast(`לא נשלחו (גדולים מדי): ${skipped.join(', ')}`);
+    if (text.trim()) parts.push(`<source kind="summaries" label="Pangea student summaries">\n${text.slice(0, budget.pangea)}\n</source>`);
+  }
+  const left = [...skipped, ...driveFailed];
+  return { docs, text: parts.join('\n\n') || '(no files: use your knowledge of the standard Technion syllabus for this course)', left };
+}
+
+async function fsGenerate(id, files, usePangea, useDrive) {
+  const prev = fsGen[id];
+  if (prev?.state === 'run') return toast('הנוסחאון הזה כבר בבנייה…');
+  const given = files; // what you attached by hand
+  // A retry with the same materials continues from where it stopped (sources read, plan, finished sections).
+  const work = (prev?.state === 'error' && prev.files === given && prev.usePangea === usePangea && prev.useDrive === useDrive && prev.work) || {};
+  const ac = new AbortController();
+  const t0 = Date.now();
+  // The status lives in fsGen, so it survives every redraw of the editor (sync, edits, tab switches).
+  const setStatus = (html, state = 'run') => {
+    fsGen[id] = { state, html, files: given, usePangea, useDrive, work, t0, cancel: () => ac.abort() };
+    if (fsOpenId !== id || currentView !== 'formula') return;
+    const st = $('#fsStatus'); if (st) st.innerHTML = html;
+    const msg = $('#fsGenMsg');
+    if (msg && state === 'run') msg.innerHTML = html; else if ($('#fsSheet .fs-blank')) render();
+  };
+  const say = text => setStatus(`<span class="muted">${text} · <span class="fs-clock">${fsClock(Date.now() - t0)}</span></span>`);
+  const call = (content, schema, maxTokens) => fsAiCall(content, schema, { maxTokens, effort: FS_GEN_EFFORT, signal: ac.signal });
+  try {
+    say('📖 מכין את החומרים…');
+    const sheet = Store.get('sheet', id);
+    if (!work.src) work.src = await fsReadMaterials(sheet, files, usePangea, useDrive, say);
+    if (ac.signal.aborted) throw Object.assign(new Error('היצירה בוטלה'), { cancelled: true });
+    // Everything up to here is the same in every request, so the API keeps it in its cache: the
+    // plan request pays for the sources once, and the section requests read them at a fraction.
+    const shared = [...work.src.docs, { type: 'text', text: `${fsBriefTask(sheet)}\n\nSOURCES:\n${work.src.text}`, cache_control: { type: 'ephemeral' } }];
+    const step = text => [...shared, { type: 'text', text }];
+    const budget = fsLineBudget(sheet);
+
+    // 1. The plan.
+    if (!work.outline) {
+      say('🧭 שלב 1/4: מתכנן את הפרקים');
+      const out = await call(step(`STEP 1: PLAN the sheet. Do not write any blocks yet.
+Return:
+- "title" and "profile".
+- "sections", in the order they appear on the sheet (about ${Math.max(5, Math.round(budget / 45))} of them). For each: "title"; "brief": exactly what goes into it (sub-topics, the named formulas and theorems, which סד״פ / tables / traps / examples), precise enough that a writer who sees only this plan and the sources writes it with no overlap with the other sections and nothing forgotten; "lines": its share of the space in short lines (the shares add up to about ${budget}). Give the most room to what the exams and the student's emphasis need.
+- "coverage": every syllabus topic with status in / partial / missing and a short note.`), FS_OUTLINE_SCHEMA, 16000);
+      out.sections = (out.sections || []).filter(s => s?.title);
+      if (!out.sections.length) throw new Error('ה-AI לא החזיר תכנון פרקים. נסה שוב.');
+      work.outline = out;
+      work.sections = [];
+    }
+    const plan = work.outline, n = plan.sections.length;
+    const planText = JSON.stringify(plan.sections.map((s, i) => ({ n: i + 1, title: s.title, brief: s.brief, lines: s.lines })));
+
+    // 2. Every section, all at the same time. One that fails is tried again by itself.
+    const done = () => work.sections.filter(Boolean).length;
+    const progress = () => say(`✍️ שלב 2/4: כותב את כל ${n} הפרקים במקביל · ${done()}/${n} מוכנים`);
+    progress();
+    const errors = [];
+    await Promise.all(plan.sections.map(async (s, i) => {
+      if (work.sections[i]) return;
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const out = await call(step(`STEP 2: WRITE ONE SECTION of the sheet.
+The plan of the whole sheet: ${planText}
+Write ONLY section ${i + 1}: "${s.title}". Its content: ${s.brief}
+Room: about ${s.lines} short lines (a "kv" row ≈ 1, a centered "eq" ≈ 2, a table row ≈ 1.3, a step or list item ≈ 1-2). Fill it; do not go more than 10% over. Do not repeat what the plan gives to other sections.
+Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SCHEMA, 24000);
+          if (!out.blocks?.length) throw new Error('פרק ריק');
+          work.sections[i] = { title: s.title, blocks: out.blocks };
+          progress();
+          return;
+        } catch (e) {
+          if (e?.cancelled || ac.signal.aborted) throw e;
+          if (e?.status === 401 || e?.status === 403 || /credit balance/i.test(String(e?.message))) { errors.push(e); return; }
+          if (attempt >= 3) { errors.push(e); return; }
+          await fsWait(e?.status === 429 || e?.status === 529 ? 25000 * attempt : 2000, ac.signal); // busy: give it room
+        }
+      }
+    }));
+    if (ac.signal.aborted) throw Object.assign(new Error('היצירה בוטלה'), { cancelled: true });
+    if (done() < n) throw Object.assign(errors[0] instanceof Error ? errors[0] : new Error('חלק מהפרקים לא נוצרו'), { fsPartial: `${done()} מתוך ${n} פרקים כבר מוכנים; "נסה שוב" ייצור רק את החסרים.` });
+    let sections = work.sections.map(s => ({ ...s }));
+
+    // 3. One check of everything against the sources. A failure here doesn't cost you the sheet.
+    let fixed = 0, checked = true;
+    try {
+      say('🔎 שלב 3/4: בודק נוסחאות מול המקורות');
+      const numbered = sections.map((s, si) => ({ section: si, title: s.title, blocks: s.blocks.map((b, bi) => ({ block: bi, ...b })) }));
+      const out = await call(step(`STEP 3: CHECK the written sheet against the sources.
+The sheet: ${JSON.stringify(numbered)}
+Check every formula, sign, condition and theorem statement (the official formula pages and the lecture notes decide), that the notation is the course's, that the LaTeX is valid KaTeX, and that nothing is said twice in different sections.
+Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "block" are the numbers above; "action" is "replace" (with the corrected block in "data") or "delete" (a duplicate; "data" is ignored); "why" in a few words. An empty list if everything is right.`), FS_FIXES_SCHEMA, 24000);
+      const fixes = (out.fixes || []).filter(f => sections[f.section]?.blocks[f.block]);
+      for (const f of fixes.filter(f => f.action === 'replace')) { const b = fsCleanBlock(f.data); if (b.t) { sections[f.section].blocks = sections[f.section].blocks.map((x, k) => (k === f.block ? b : x)); fixed++; } }
+      for (const f of fixes.filter(f => f.action === 'delete').sort((a, b) => b.block - a.block)) { sections[f.section].blocks = sections[f.section].blocks.filter((x, k) => k !== f.block); fixed++; }
+      sections = sections.filter(s => s.blocks.length);
+    } catch (e) {
+      if (e?.cancelled || ac.signal.aborted) throw e;
+      console.warn('formula sheet: check step failed', e);
+      checked = false;
+    }
+
+    // 4. Does it fit? Measured with the real layout; if not, every section is shortened (again all at once).
+    try {
+      say('📏 שלב 4/4: מודד התאמה לעמודים');
+      const info = await fsLayout({ ...sheet, sections, autofit: true }, document.createElement('div'));
+      const over = info && (info.pages > info.target ? 0.75 : info.scale < 0.82 ? 0.88 : 0);
+      if (over) {
+        say(`✂️ שלב 4/4: מקצר כדי להיכנס ל-${info.target} עמודים`);
+        sections = await Promise.all(sections.map(async s => {
+          try {
+            const out = await call(`Formula sheet "${plan.title}" (${courseLabel(sheet.course)}). The whole sheet is too long for its ${info.target} page(s).
+Shorten this section to about ${Math.round(over * 100)}% of its length: keep what an exam needs most (the סד״פ, the key formulas, the traps), drop derivations and what is obvious, merge rows. Same block types and style.
+The section: ${JSON.stringify(s)}
+Return {"blocks":[...]}.`, FS_BLOCKS_SCHEMA, 24000);
+            return out.blocks?.length ? { ...s, blocks: out.blocks } : s;
+          } catch (e) { if (e?.cancelled) throw e; return s; }
+        }));
+      }
+    } catch (e) {
+      if (e?.cancelled || ac.signal.aborted) throw e;
+      console.warn('formula sheet: fit step failed', e);
+    }
+
+    if (!fsHasContent({ sections })) throw new Error('ה-AI החזיר נוסחאון ריק. נסה שוב; אם זה חוזר, צרף חומרי קורס או פרט יותר בדגשים.');
+    const left = work.src.left;
     delete fsGen[id];
-    Store.put('sheet', id, { title: out.title || sheet.title, profile: out.profile?.length ? out.profile : sheet.profile, sections: out.sections.map(s => ({ id: fsId(), ...s })), coverage: out.coverage || [] });
-    toast('✨ הנוסחאון מוכן');
+    Store.put('sheet', id, { title: plan.title || sheet.title, profile: plan.profile?.length ? plan.profile : sheet.profile, sections: sections.map(s => ({ id: fsId(), ...s })), coverage: plan.coverage || [] });
+    toast(`✨ הנוסחאון מוכן (${fsClock(Date.now() - t0)})${checked ? (fixed ? ` · ${fixed} תיקונים בבדיקה` : ' · נבדק מול המקורות') : ' · שלב הבדיקה נכשל, כדאי לבקש "בדוק שהנוסחאות נכונות" בעזרה מ-AI'}${left.length ? ` · לא נקראו: ${left.join(', ')}` : ''}`);
   } catch (e) {
     console.error(e);
-    setStatus(`<span class="bad">היצירה נכשלה: ${aiErrorHtml(e)}</span>`, 'error');
+    const partial = e?.fsPartial || (work.outline && !e?.cancelled ? 'מה שכבר נוצר נשמר; "נסה שוב" ימשיך מאותה נקודה.' : '');
+    setStatus(`<span class="bad">${e?.cancelled ? 'היצירה בוטלה.' : `היצירה נכשלה: ${aiErrorHtml(e)}`}</span>${partial || (e?.cancelled && work.outline) ? ` <span class="muted">${esc(partial || '"נסה שוב" ימשיך מאותה נקודה.')}</span>` : ''}`, 'error');
   }
 }
 
