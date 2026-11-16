@@ -266,6 +266,7 @@ function renderSheetList(root) {
         <div class="row wrap">
           <button class="btn" type="button" id="fsTour">🎓 מדריך</button>
           <button class="btn" type="button" data-go="tools">← לכלים</button>
+          <button class="btn" type="button" id="fsDigestBtn" title="שלב הכנה חד-פעמי לכל קורס: חוסך את רוב עלות הקלט בכל נוסחאון">📚 תקציר קורס${Object.keys(fsDigestRun).length ? ' (בהכנה…)' : ''}</button>
           <button class="btn" type="button" id="fsImport">📥 ייבוא JSON</button>
           <button class="btn primary" type="button" id="fsNew">＋ נוסחאון חדש</button>
         </div>
@@ -281,6 +282,7 @@ function renderSheetList(root) {
     </section>`;
   $('#fsNew', root).onclick = () => fsNewSheet();
   $('#fsImport', root).onclick = () => fsImportJson();
+  $('#fsDigestBtn', root).onclick = () => fsDigestDialog();
   $$('[data-open]', root).forEach(b => b.onclick = () => { fsOpenId = b.dataset.open; render(); });
   if ($('#fsSample', root)) $('#fsSample', root).onclick = () => {
     const id = uid();
@@ -389,7 +391,7 @@ function renderSheetEditor(root, sheet) {
     pagesHost.style.zoom = '';
     pagesHost.onclick = null;
     $('#fsBlankAi', root)?.addEventListener('click', () => fsGenerateDialog(sheet));
-    $('#fsBlankRetry', root)?.addEventListener('click', () => fsGenerate(sheet.id, gen.files, gen.usePangea, gen.useDrive));
+    $('#fsBlankRetry', root)?.addEventListener('click', () => fsGenerate(sheet.id, gen.files, gen.usePangea, gen.useDrive, gen.useDigest));
     $('#fsBlankBrief', root)?.addEventListener('click', async () => { await navigator.clipboard.writeText(fsBriefPrompt(sheet)); toast('הבריף הועתק. שלח אותו ל-Claude יחד עם חומרי הקורס, ואז "ייבוא JSON".'); });
     $('#fsBlankImport', root)?.addEventListener('click', () => fsImportJson(sheet.id));
     $('#fsBlankKey', root)?.addEventListener('click', () => go('cv'));
@@ -649,7 +651,10 @@ function fsPrint() {
 }
 
 // ---------- new sheet: the brief ----------
-const fsSourcesHtml = () => `<div class="fs-sources">${FS_SOURCES.map(([k, l, d]) => `<label class="fs-src"><span>${l}${d ? `<small class="muted">${d}</small>` : ''}</span><input type="file" name="src_${k}" multiple accept=".pdf,.docx,.txt,.md,.tex"></label>`).join('')}
+const fsSourcesHtml = (withDigest = true) => `${withDigest ? `<div class="fs-sources fs-digest-src">
+        <label class="fs-src"><span>📚 תקציר הקורס<small class="muted" id="fsDigestNote">בודק…</small></span><input type="checkbox" name="digest" id="fsDigest" disabled></label>
+      </div>
+      <p class="muted small"><button type="button" class="btn small" id="fsDigestMake">📚 הכן תקציר קורס</button> שלב הכנה חד-פעמי. עם תקציר, אין צורך לצרף שוב את החומרים למטה.</p>` : ''}<div class="fs-sources">${FS_SOURCES.map(([k, l, d]) => `<label class="fs-src"><span>${l}${d ? `<small class="muted">${d}</small>` : ''}</span><input type="file" name="src_${k}" multiple accept=".pdf,.docx,.txt,.md,.tex"></label>`).join('')}
         <label class="fs-src"><span>💡 נוסחאון קיים לדוגמה והשראה<small class="muted">הסגנון והמבנה שלו ילמדו</small></span><input type="file" name="src_inspire" multiple accept=".pdf,.docx,.txt,.md,.tex,.json"></label>
         <label class="fs-src" id="fsPangeaRow"><span>💧 סיכומי פנגייה לקורס<small class="muted" id="fsPangeaNote">בודק…</small></span><input type="checkbox" name="pangea" id="fsPangea" disabled></label>
         <label class="fs-src" id="fsDriveRow"><span>📁 תיקיית ה-Drive של הקורס<small class="muted" id="fsDriveNote">בודק…</small></span><input type="checkbox" name="cdrive" id="fsDrive" disabled></label>
@@ -697,6 +702,15 @@ function fsDriveNeedsAccess() {
 }
 
 function fsPangeaCheck(form, code) {
+  // The course digest (the prepare step): when there is one, it replaces reading the materials again.
+  const gNote = $('#fsDigestNote', form), gBox = $('#fsDigest', form), dg = fsDigest(code);
+  if (gNote && gBox) {
+    gBox.disabled = !dg; gBox.checked = !!dg;
+    gNote.textContent = fsDigestRun[code] ? 'בהכנה כרגע…' : dg ? `מוכן · ${fsDigestInfo(dg)}. הנוסחאון ייכתב ממנו (זול ומהיר)` : 'אין עדיין. מומלץ להכין לפני היצירה: חוסך טוקנים בכל נוסחאון של הקורס';
+    const mk = $('#fsDigestMake', form);
+    if (mk) { mk.textContent = dg ? '📚 עדכן / הצג תקציר' : '📚 הכן תקציר קורס'; mk.onclick = () => { $('#modal').close(); setTimeout(() => fsDigestDialog(code), 30); }; }
+  }
+  const useDg = !!(dg && gBox); // with a digest, the full materials are off unless you tick them
   const dNote = $('#fsDriveNote', form), dBox = $('#fsDrive', form);
   if (dNote && dBox) {
     const c = courseByCode(code);
@@ -706,7 +720,7 @@ function fsPangeaCheck(form, code) {
       const plan = fsDrivePlan(code), n = Object.values(plan).reduce((s, a) => s + a.length, 0);
       const names = { exams: 'מבחנים', material: 'חומרי קורס', summaries: 'סיכומים', slides: 'הרצאות', tutorials: 'תרגולים', hw: 'שיעורי בית', inspire: 'נוסחאון' };
       dNote.textContent = n ? `${n} קבצים: ${Object.entries(plan).map(([k, a]) => `${a.length} ${names[k]}`).join(', ')}${fsDriveCanRead() ? '' : ' (יתבקש אישור קריאה מ-Google)'}` : 'לא נמצאו בתיקייה מסמכים (PDF / Word / טקסט)';
-      dBox.disabled = !n; dBox.checked = !!n;
+      dBox.disabled = !n; dBox.checked = !!n && !useDg;
     };
     if (!Sync.connected) dNote.textContent = 'צריך קודם להתחבר ל-Google';
     else if (!c?.drive) dNote.textContent = 'לא קושרה תיקייה לקורס הזה (כלים ← 📁 תיקיית Drive)';
@@ -721,7 +735,7 @@ function fsPangeaCheck(form, code) {
   Pangea.load().then(() => {
     const pg = Pangea.course(code);
     note.textContent = pg ? `${pg.pages.length} דפים נמצאו` : 'אין סיכומים לקורס הזה';
-    box.disabled = !pg; box.checked = !!pg;
+    box.disabled = !pg; box.checked = !!pg && !useDg;
   }).catch(() => { note.textContent = 'לא זמין כרגע'; });
 }
 const fsReadSources = fd => { const files = {}; for (const [k] of [...FS_SOURCES, ['inspire']]) files[k] = fd.getAll('src_' + k).filter(f => f && f.size); return files; };
@@ -734,7 +748,7 @@ function fsGenerateDialog(sheet) {
     <div class="actions"><button class="btn" value="cancel" formnovalidate>ביטול</button><button class="btn primary" value="ai">✨ צור</button></div>`, (action, fd) => {
     if (action !== 'ai') return;
     if (fd.get('cdrive') && fsDriveNeedsAccess()) return false;
-    fsGenerate(sheet.id, fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'));
+    fsGenerate(sheet.id, fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'), !!fd.get('digest'));
   }, form => fsPangeaCheck(form, sheet.course));
   fsWide();
 }
@@ -795,7 +809,7 @@ function fsNewSheet(courseCode) {
     if (fd.get('cdrive') && fsDriveNeedsAccess()) return false;
     Store.put('sheet', id, sheet);
     fsOpenId = id; go('formula');
-    fsGenerate(id, fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'));
+    fsGenerate(id, fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'), !!fd.get('digest'));
   }, form => {
     const sel = $('#fsCourse', form);
     const drawProf = () => {
@@ -824,15 +838,15 @@ const FS_STYLE_GUIDE = `STYLE (the student's own standard theme, learned from th
 - Dense, exam-ready, no fluff. Vectors underlined (\\underline{r}) when the course does so.
 FIGURES (only when the course profile includes "figures"): draw your own clean SVG (viewBox, ~240x150), white background, black 1.2px lines, blue #1d4ed8 for geometry/vectors, red #dc2626 for forces/loads, labels as <text> with font-family="KaTeX_Math, serif" font-style="italic". Model them on the diagrams in the course material (free-body diagrams, beams, supports, Mohr's circle, cross-sections). No figures for courses without "figures".`;
 
-// Every field is required: a schema with many optional fields is too heavy for the API to compile
-// ("Grammar compilation timed out"). The model leaves unused fields empty and fsCleanBlock drops them.
+// These schemas are shown to the model as the description of the answer (they are not compiled by
+// the API: with this many optional fields that failed with "Grammar compilation timed out").
 const FS_BLOCK_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['t', 'md', 'label', 'tex', 'note', 'title', 'variant', 'style', 'items', 'code', 'svg', 'caption', 'width', 'head', 'rows'],
+  required: ['t'],
   properties: {
     t: { type: 'string', enum: Object.keys(FS_BLOCKS) },
     md: { type: 'string' }, label: { type: 'string' }, tex: { type: 'string' }, note: { type: 'string' },
-    title: { type: 'string' }, variant: { type: 'string', enum: ['', 'tip', 'trap', 'note'] }, style: { type: 'string', enum: ['', 'square', 'bullet', 'num'] },
+    title: { type: 'string' }, variant: { type: 'string', enum: ['tip', 'trap', 'note'] }, style: { type: 'string', enum: ['square', 'bullet', 'num'] },
     items: { type: 'array', items: { type: 'string' } }, code: { type: 'string' }, svg: { type: 'string' }, caption: { type: 'string' }, width: { type: 'number' },
     head: { type: 'array', items: { type: 'string' } }, rows: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
   },
@@ -848,7 +862,7 @@ const FS_SHEET_SCHEMA = {
     title: { type: 'string' },
     profile: { type: 'array', items: { type: 'string', enum: Object.keys(FS_PROFILES) } },
     sections: FS_SECTIONS_SCHEMA.properties.sections,
-    coverage: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'status', 'note'], properties: { topic: { type: 'string' }, status: { type: 'string', enum: ['in', 'partial', 'missing'] }, note: { type: 'string' } } } },
+    coverage: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'status'], properties: { topic: { type: 'string' }, status: { type: 'string', enum: ['in', 'partial', 'missing'] }, note: { type: 'string' } } } },
   },
 };
 
@@ -896,11 +910,33 @@ function fsCleanOut(out) {
   if (Array.isArray(out?.coverage)) out.coverage = out.coverage.filter(c => c?.topic).map(c => (c.note ? c : { topic: c.topic, status: c.status }));
   return out;
 }
-// The JSON object inside a free-text answer (with or without a ```json fence around it).
+// The JSON object inside the answer (with or without a ```json fence around it). The answer is
+// plain JSON written by the model, so LaTeX backslashes that weren't doubled are repaired here.
 function fsParseJson(text) {
   const a = text.indexOf('{'), b = text.lastIndexOf('}');
   if (a < 0 || b <= a) throw new Error('ה-AI לא החזיר JSON תקין. נסה שוב.');
-  try { return JSON.parse(text.slice(a, b + 1)); } catch { throw new Error('ה-AI החזיר JSON שבור. נסה שוב.'); }
+  const raw = text.slice(a, b + 1);
+  let out;
+  try { out = JSON.parse(raw); }
+  catch {
+    // "\sigma", "\partial", "\underline": a backslash that is not a JSON escape. Double it and read again.
+    try { out = JSON.parse(raw.replace(/\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})/g, '\\\\')); }
+    catch { throw new Error('ה-AI החזיר JSON שבור. נסה שוב.'); }
+  }
+  return fsFixTex(out);
+}
+// "\frac", "\beta", "\theta", "\rho", "\nabla" with a single backslash ARE JSON escapes (form feed,
+// backspace, tab, return, newline), so they parse without an error into control characters. Put the
+// backslash back. A real line break is kept, except inside a formula field.
+function fsFixTex(v, key) {
+  if (typeof v === 'string') {
+    let s = v.replace(/\f/g, '\\f').replace(/[\b]/g, '\\b').replace(/\r(?=[a-zA-Z])/g, '\\r').replace(/\t(?=[a-zA-Z])/g, '\\t');
+    s = key === 'tex' ? s.replace(/\n(?=[a-zA-Z])/g, '\\n') : s.replace(/\n(?=(?:abla|eq|ot|otin|eg|u|i)(?![a-zA-Z\u0590-\u05ff]))/g, '\\n');
+    return s;
+  }
+  if (Array.isArray(v)) return v.map(x => fsFixTex(x, key));
+  if (v && typeof v === 'object') { for (const k of Object.keys(v)) v[k] = fsFixTex(v[k], k); }
+  return v;
 }
 
 // Tokens and estimated cost. USD per million tokens for CV_MODEL (Claude Opus 5.5): input, output,
@@ -919,64 +955,55 @@ const fsUsageText = u => `~$${fsUsd(u).toFixed(2)} (${fsK((u.in || 0) + (u.read 
 // A request with no sign of life for this long is treated as stuck and stopped.
 const FS_STALL_MS = 10 * 60_000;
 
-// One request to Claude that returns JSON. opts: { maxTokens, effort, signal, onText } (or just maxTokens).
-async function fsAiCall(prompt, schema, opts = {}) {
-  if (typeof opts === 'number') opts = { maxTokens: opts };
-  const { maxTokens = 16000, effort = 'medium', signal, onText } = opts;
+// One request to Claude; returns the text of the answer.
+// prompt: text, or content blocks (PDF documents for scanned material + text). tail: the format note.
+// opts: { maxTokens, effort, signal, onUsage, onStart }.
+async function fsAiRaw(prompt, tail, opts = {}) {
+  const { maxTokens = 16000, effort = 'medium', signal } = opts;
   const client = await claudeClient();
-  const ask = async strict => {
-    // The format note goes last in the message, so the system prompt and the sources before it
-    // stay identical between requests (that is what lets the API reuse them from its cache).
-    const extra = strict
-      ? 'FORMAT: every block object carries every field of the schema: leave the fields that block type does not use empty ("" for text, [] for lists, 0 for numbers).'
-      : `FORMAT: answer with ONE JSON object only (no prose, no code fence), matching this JSON schema; omit the fields a block type does not use:\n${JSON.stringify(schema)}`;
-    const content = typeof prompt === 'string' ? `${prompt}\n\n${extra}` : [...prompt, { type: 'text', text: extra }];
-    const ac = new AbortController();
-    const stop = () => ac.abort();
-    if (signal?.aborted) stop(); else signal?.addEventListener('abort', stop);
-    let last = Date.now(), stalled = false;
-    const watchdog = setInterval(() => { if (Date.now() - last > FS_STALL_MS) { stalled = true; stop(); } }, 5000);
-    try {
-      const stream = client.beta.messages.stream({
-        model: CV_MODEL,
-        max_tokens: maxTokens,
-        betas: ['server-side-fallback-2026-07-01'],
-        fallbacks: 'default',
-        output_config: { effort, ...(strict ? { format: { type: 'json_schema', schema } } : {}) },
-        system: FS_SYSTEM,
-        // prompt: text, or content blocks (PDF documents for scanned material + text)
-        messages: [{ role: 'user', content }],
-      }, { signal: ac.signal });
-      stream.on?.('streamEvent', () => { last = Date.now(); });
-      if (onText) stream.on?.('text', d => onText(d));
-      const response = await stream.finalMessage();
-      opts.onUsage?.(response.usage);
-      if (response.stop_reason === 'refusal') throw new Error('הבקשה נדחתה');
-      if (response.stop_reason === 'max_tokens') throw new Error('התשובה נחתכה (ארוכה מדי). נסה בקשה מצומצמת יותר.');
-      const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
-      return fsCleanOut(strict ? JSON.parse(text) : fsParseJson(text));
-    } catch (e) {
-      if (stalled) throw new Error('אין תגובה מ-Anthropic כבר 10 דקות, הבקשה נעצרה.');
-      if (signal?.aborted) throw Object.assign(new Error('היצירה בוטלה'), { cancelled: true });
-      throw e;
-    } finally {
-      clearInterval(watchdog);
-      signal?.removeEventListener('abort', stop);
-    }
-  };
-  if (fsNoStrict) return ask(false);
-  try { return await ask(true); }
-  catch (e) {
-    // The API couldn't use the schema (too complex / compile timeout): same request as plain JSON,
-    // and later requests skip the attempt that is known to fail.
-    const msg = String(e?.error?.error?.message || e?.message || '');
-    if (e?.cancelled || !/grammar|schema|compil/i.test(msg)) throw e;
-    console.warn('formula sheet: structured output unavailable, using plain JSON:', msg);
-    fsNoStrict = true;
-    return ask(false);
+  // The format note goes last in the message, so the system prompt and the sources before it stay
+  // identical between requests (that is what lets the API reuse them from its cache).
+  const content = typeof prompt === 'string' ? `${prompt}\n\n${tail}` : [...prompt, { type: 'text', text: tail }];
+  const ac = new AbortController();
+  const stop = () => ac.abort();
+  if (signal?.aborted) stop(); else signal?.addEventListener('abort', stop);
+  let last = Date.now(), stalled = false, started = false;
+  const watchdog = setInterval(() => { if (Date.now() - last > FS_STALL_MS) { stalled = true; stop(); } }, 5000);
+  try {
+    const stream = client.beta.messages.stream({
+      model: CV_MODEL,
+      max_tokens: maxTokens,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort },
+      system: FS_SYSTEM,
+      messages: [{ role: 'user', content }],
+    }, { signal: ac.signal });
+    stream.on?.('streamEvent', () => { last = Date.now(); if (!started) { started = true; opts.onStart?.(); } });
+    const response = await stream.finalMessage();
+    opts.onUsage?.(response.usage);
+    if (response.stop_reason === 'refusal') throw new Error('הבקשה נדחתה');
+    if (response.stop_reason === 'max_tokens') throw new Error('התשובה נחתכה (ארוכה מדי). נסה בקשה מצומצמת יותר.');
+    return response.content.filter(b => b.type === 'text').map(b => b.text).join('');
+  } catch (e) {
+    if (stalled) throw new Error('אין תגובה מ-Anthropic כבר 10 דקות, הבקשה נעצרה.');
+    if (signal?.aborted) throw Object.assign(new Error('היצירה בוטלה'), { cancelled: true });
+    throw e;
+  } finally {
+    clearInterval(watchdog);
+    signal?.removeEventListener('abort', stop);
   }
 }
-let fsNoStrict = false;
+
+// A request that returns JSON. The answer is plain JSON (not the API's schema-constrained mode):
+// that mode couldn't compile this schema, and it made every block carry all 15 fields.
+async function fsAiCall(prompt, schema, opts = {}) {
+  if (typeof opts === 'number') opts = { maxTokens: opts };
+  const text = await fsAiRaw(prompt, `FORMAT: answer with ONE JSON object only (no prose, no code fence), matching the JSON schema below. Give each block only the fields its type uses. Inside JSON strings every LaTeX backslash is doubled ("\\\\frac{a}{b}", "\\\\theta").
+${JSON.stringify(schema)}`, opts);
+  return fsCleanOut(fsParseJson(text));
+}
+const fsAiText = (prompt, opts) => fsAiRaw(prompt, 'FORMAT: plain text with Markdown headings and lists, math in $...$. No JSON.', opts);
 
 function fsAiDialog(sheet) {
   const secs = sheet.sections || [];
@@ -1013,11 +1040,93 @@ ${scope === 'all' ? 'The whole sheet' : 'One section of it'}:\n${JSON.stringify(
   });
 }
 
+// ---------- course digest: the "prepare" step ----------
+// Done once per course, before generating: Claude reads all the materials and writes one dense
+// reference (formulas, notation, question types). Sheets are then written from the digest instead
+// of from the full materials, so each sheet costs a fraction of the input. Saved as a record of
+// kind "digest" (id = course code), so it syncs like everything else.
+const fsDigestRun = {}; // course code → true while its digest is being prepared
+const fsDigest = code => Store.get('digest', code);
+const fsDigestInfo = d => `${new Date(d.at).toLocaleDateString(LOCALE)} · ${d.n || 0} מקורות · כ-${fsK(Math.round(d.text.length / 2.5))} טוקנים`;
+const fsDigestTask = c => `TASK: write the COURSE DIGEST for "${c?.name || ''}" (${c?.code || ''}): one dense reference document from which exam formula sheets will later be written WITHOUT access to these sources. Whatever is not in the digest will not reach the sheet, so be complete on substance and ruthless on fluff.
+Include, in the course's order of topics:
+1. Syllabus: the list of topics (and anything the sources say is not examined).
+2. For each topic: every definition, formula, identity and theorem (with its conditions) in LaTeX, in the course's own notation; the standard solution procedures (סד״פ) step by step; how to recognise each problem type and which method follows; the usual traps and mistakes; one short worked pattern where the method is not obvious.
+3. The official formula page(s), if present: reproduce their content precisely under a heading marked "(דף רשמי)", so a sheet can keep or avoid the overlap.
+4. Past exams, if present: which question types recur and how often, and what they demand.
+5. A notation table: symbols, conventions, units.
+Hebrew prose, math in LaTeX. No introduction and no study advice. As long as the material needs, up to about 15,000 tokens.`;
+
+async function fsMakeDigest(code, files, usePangea, useDrive) {
+  if (fsDigestRun[code]) return toast('התקציר של הקורס הזה כבר בהכנה…');
+  fsDigestRun[code] = true;
+  const c = courseByCode(code);
+  const used = { in: 0, out: 0, read: 0, write: 0, calls: 0 };
+  const say = t => toast(`📚 תקציר ${c?.name || code}: ${String(t).replace(/<[^>]+>/g, '')}`);
+  if (currentView === 'formula' && !fsOpenId) render();
+  try {
+    say('קורא את החומרים…');
+    const src = await fsReadMaterials({ course: code }, files, usePangea, useDrive, say, '');
+    if (!src.count) throw new Error('לא נבחרו חומרים, ואין ממה להכין תקציר.');
+    say('Claude מזקק את החומרים (כמה דקות, רץ ברקע)…');
+    const text = (await fsAiText([...src.docs, { type: 'text', text: `${fsDigestTask(c)}\n\nSOURCES:\n${src.text}` }], { maxTokens: 48000, effort: 'high', onUsage: u => fsAddUsage(used, u) })).trim();
+    if (text.length < 500) throw new Error('התקציר שחזר קצר מדי. נסה שוב.');
+    Store.put('digest', code, { text, at: Date.now(), n: src.count, ai: used });
+    toast(`📚 התקציר של ${c?.name || code} מוכן · ${fsUsageText(used).split(' (')[0]}${src.left.length ? ` · לא נקראו: ${src.left.join(', ')}` : ''} · עכשיו אפשר ליצור ממנו נוסחאון`);
+  } catch (e) {
+    console.error(e);
+    toast(`הכנת התקציר נכשלה: ${aiError(e).text}`);
+  } finally {
+    delete fsDigestRun[code];
+    if (currentView === 'formula' && !fsOpenId && !$('#modal').open) render();
+  }
+}
+
+function fsDigestDialog(code0) {
+  const list = courses();
+  const active = list.filter(c => c.status === 'active');
+  const opt = c => `<option value="${esc(c.code)}" ${c.code === code0 ? 'selected' : ''}>${esc(c.name)} (${esc(c.code)})${fsDigest(c.code) ? ' ✓' : ''}</option>`;
+  const hasKey = !!claudeKey();
+  openModal(`<h2>📚 תקציר קורס</h2>
+    <p class="muted">שלב הכנה, פעם אחת לכל קורס: Claude קורא את כל החומרים וכותב מסמך מרוכז אחד (נוסחאות, סימונים, סד״פ, סוגי שאלות). אחר כך כל נוסחאון של הקורס נכתב מהתקציר במקום מכל החומרים, וזה חוסך את רוב עלות הקלט. מה שלא נכנס לתקציר לא יגיע לנוסחאון, אז אפשר לקרוא ולתקן אותו כאן.</p>
+    <label class="field"><span class="field-label">קורס</span><select name="course" id="fsCourse">
+      ${active.length ? `<optgroup label="בלימוד">${active.map(opt).join('')}</optgroup>` : ''}
+      <optgroup label="כל הקורסים">${list.filter(c => c.status !== 'active').map(opt).join('')}</optgroup></select></label>
+    <div id="fsDigestState"></div>
+    <div class="field"><span class="field-label">📂 חומרים לתקציר. קבצי PDF נקראים במכשיר בלבד.</span>${fsSourcesHtml(false)}</div>
+    ${hasKey ? '' : '<p class="bad small">צריך מפתח API של Anthropic (בלשונית קו״ח ← הגדרות AI).</p>'}
+    <div class="actions"><button class="btn" value="cancel" formnovalidate>סגור</button><button class="btn primary" value="make" ${hasKey ? '' : 'disabled'}>📚 הכן תקציר</button></div>`, (action, fd) => {
+    if (action !== 'make') return;
+    if (fd.get('cdrive') && fsDriveNeedsAccess()) return false;
+    fsMakeDigest(String(fd.get('course')), fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'));
+  }, form => {
+    const sel = $('#fsCourse', form);
+    const draw = () => {
+      const code = sel.value, d = fsDigest(code), box = $('#fsDigestState', form);
+      box.innerHTML = fsDigestRun[code] ? '<p class="muted small">📚 התקציר של הקורס הזה בהכנה כרגע…</p>'
+        : d ? `<p class="small"><b class="ok">✓ יש תקציר</b> · ${esc(fsDigestInfo(d))}${d.ai ? ` · עלה ${esc(fsUsageText(d.ai).split(' (')[0])}` : ''}. הכנה מחדש תחליף אותו.</p>
+          <details class="set-sub"><summary>הצג / ערוך את התקציר</summary>
+            <textarea id="fsDigestText" rows="14" style="width:100%">${esc(d.text)}</textarea>
+            <div class="row wrap"><button type="button" class="btn small" id="fsDigestSave">שמור שינויים</button><button type="button" class="btn small danger" id="fsDigestDel">מחק תקציר</button></div>
+          </details>`
+        : '<p class="muted small">עוד אין תקציר לקורס הזה.</p>';
+      if ($('#fsDigestSave', form)) $('#fsDigestSave', form).onclick = () => { Store.put('digest', code, { text: $('#fsDigestText', form).value.trim() }); toast('התקציר נשמר'); };
+      if ($('#fsDigestDel', form)) $('#fsDigestDel', form).onclick = () => { if (confirm('למחוק את תקציר הקורס?')) { Store.remove('digest', code); draw(); } };
+      fsPangeaCheck(form, code);
+    };
+    sel.onchange = draw;
+    draw();
+  });
+  fsWide();
+}
+
 // ---------- full generation: plan → every section at once → check → fit ----------
 // One request for a whole sheet is slow and gets cut off at the answer-length limit. So: a short
 // plan first, then every section in its own request, all running at the same time, then one check
 // against the sources, then (if it doesn't fit the pages) one round of shortening.
-const FS_GEN_EFFORT = 'high'; // the same for every step: changing it would drop the API's cache of the sources
+// Effort: high for the plan and the check (where judgment matters), medium for writing the sections
+// (most of the output). A change of effort drops the API's cache of the sources, so the first
+// section request goes out alone and the others follow once it has started (and re-written the cache).
 const FS_OUTLINE_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['title', 'profile', 'sections', 'coverage'],
   properties: {
@@ -1029,7 +1138,7 @@ const FS_OUTLINE_SCHEMA = {
 };
 const FS_FIXES_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['fixes'],
-  properties: { fixes: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['section', 'block', 'action', 'why', 'data'],
+  properties: { fixes: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['section', 'block', 'action', 'why'],
     properties: { section: { type: 'integer' }, block: { type: 'integer' }, action: { type: 'string', enum: ['replace', 'delete'] }, why: { type: 'string' }, data: FS_BLOCK_SCHEMA } } } },
 };
 const fsWait = (ms, signal) => new Promise((res, rej) => { const t = setTimeout(res, ms); signal?.addEventListener('abort', () => { clearTimeout(t); rej(Object.assign(new Error('היצירה בוטלה'), { cancelled: true })); }); });
@@ -1038,7 +1147,7 @@ const fsClock = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${
 document.addEventListener('click', e => { if (e.target.closest?.('[data-fsgen-cancel]')) fsGen[fsOpenId]?.cancel?.(); });
 
 // Reads everything you attached (and the Drive folder / Pangea if asked) into text and documents.
-async function fsReadMaterials(sheet, files, usePangea, useDrive, say) {
+async function fsReadMaterials(sheet, files, usePangea, useDrive, say, digest) {
   const parts = [];
   const driveFailed = [];
   if (useDrive) {
@@ -1100,20 +1209,22 @@ async function fsReadMaterials(sheet, files, usePangea, useDrive, say) {
     if (text.trim()) parts.push(`<source kind="summaries" label="Pangea student summaries">\n${text.slice(0, budget.pangea)}\n</source>`);
   }
   const left = [...skipped, ...driveFailed];
-  return { docs, text: parts.join('\n\n') || '(no files: use your knowledge of the standard Technion syllabus for this course)', left };
+  const count = parts.length ? Object.values(files || {}).reduce((s, a) => s + a.length, 0) - skipped.length + (usePangea ? Pangea.course(sheet.course)?.pages.length || 0 : 0) : 0;
+  if (digest) parts.unshift(`<course_digest note="prepared earlier from the full course materials; treat it as the main source">\n${digest}\n</course_digest>`);
+  return { docs, text: parts.join('\n\n') || '(no files: use your knowledge of the standard Technion syllabus for this course)', left, count };
 }
 
-async function fsGenerate(id, files, usePangea, useDrive) {
+async function fsGenerate(id, files, usePangea, useDrive, useDigest) {
   const prev = fsGen[id];
   if (prev?.state === 'run') return toast('הנוסחאון הזה כבר בבנייה…');
   const given = files; // what you attached by hand
   // A retry with the same materials continues from where it stopped (sources read, plan, finished sections).
-  const work = (prev?.state === 'error' && prev.files === given && prev.usePangea === usePangea && prev.useDrive === useDrive && prev.work) || {};
+  const work = (prev?.state === 'error' && prev.files === given && prev.usePangea === usePangea && prev.useDrive === useDrive && prev.useDigest === useDigest && prev.work) || {};
   const ac = new AbortController();
   const t0 = Date.now();
   // The status lives in fsGen, so it survives every redraw of the editor (sync, edits, tab switches).
   const setStatus = (html, state = 'run') => {
-    fsGen[id] = { state, html, files: given, usePangea, useDrive, work, t0, cancel: () => ac.abort() };
+    fsGen[id] = { state, html, files: given, usePangea, useDrive, useDigest, work, t0, cancel: () => ac.abort() };
     if (currentView === 'formula' && !fsOpenId && state !== 'run') render(); // the list shows the sheet's state
     if (fsOpenId !== id || currentView !== 'formula') return;
     const st = $('#fsStatus'); if (st) st.innerHTML = html;
@@ -1123,11 +1234,11 @@ async function fsGenerate(id, files, usePangea, useDrive) {
   let stage = 'הכנת החומרים'; // named in the error, so a failure says where it happened
   const say = (text, name) => { if (name) stage = name; setStatus(`<span class="muted">${text}</span>`); };
   const used = work.used = work.used || { in: 0, out: 0, read: 0, write: 0, calls: 0 }; // kept across "try again"
-  const call = (content, schema, maxTokens) => fsAiCall(content, schema, { maxTokens, effort: FS_GEN_EFFORT, signal: ac.signal, onUsage: u => fsAddUsage(used, u) });
+  const call = (content, schema, maxTokens, effort = 'high', onStart) => fsAiCall(content, schema, { maxTokens, effort, signal: ac.signal, onUsage: u => fsAddUsage(used, u), onStart });
   try {
     say('📖 מכין את החומרים…');
     const sheet = Store.get('sheet', id);
-    if (!work.src) work.src = await fsReadMaterials(sheet, files, usePangea, useDrive, say);
+    if (!work.src) work.src = await fsReadMaterials(sheet, files, usePangea, useDrive, say, useDigest ? fsDigest(sheet.course)?.text : '');
     if (ac.signal.aborted) throw Object.assign(new Error('היצירה בוטלה'), { cancelled: true });
     // Everything up to here is the same in every request, so the API keeps it in its cache: the
     // plan request pays for the sources once, and the section requests read them at a fraction.
@@ -1157,7 +1268,7 @@ Return:
     stage = 'כתיבת הפרקים';
     progress();
     const errors = [];
-    await Promise.all(plan.sections.map(async (s, i) => {
+    const writeSection = async (s, i, onStart) => {
       if (work.sections[i]) return;
       for (let attempt = 1; ; attempt++) {
         try {
@@ -1165,7 +1276,7 @@ Return:
 The plan of the whole sheet: ${planText}
 Write ONLY section ${i + 1}: "${s.title}". Its content: ${s.brief}
 Room: about ${s.lines} short lines (a "kv" row ≈ 1, a centered "eq" ≈ 2, a table row ≈ 1.3, a step or list item ≈ 1-2). Fill it; do not go more than 10% over. Do not repeat what the plan gives to other sections.
-Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SCHEMA, 48000);
+Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SCHEMA, 48000, 'medium', onStart);
           if (!out.blocks?.length) throw new Error('פרק ריק');
           work.sections[i] = { title: s.title, blocks: out.blocks };
           progress();
@@ -1177,7 +1288,16 @@ Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SC
           await fsWait(e?.status === 429 || e?.status === 529 ? 25000 * attempt : 2000, ac.signal); // busy: give it room
         }
       }
-    }));
+    };
+    // The first one goes out alone; the moment it starts answering, all the others go out together.
+    const todo = plan.sections.map((s, i) => i).filter(i => !work.sections[i]);
+    if (todo.length) {
+      let go1;
+      const started = new Promise(res => { go1 = res; });
+      const first = writeSection(plan.sections[todo[0]], todo[0], go1).finally(go1);
+      await started;
+      await Promise.all([first, ...todo.slice(1).map(i => writeSection(plan.sections[i], i))]);
+    }
     if (ac.signal.aborted) throw Object.assign(new Error('היצירה בוטלה'), { cancelled: true });
     if (done() < n) throw Object.assign(errors[0] instanceof Error ? errors[0] : new Error('חלק מהפרקים לא נוצרו'), { fsPartial: `${done()} מתוך ${n} פרקים כבר מוכנים; "נסה שוב" ייצור רק את החסרים.` });
     let sections = work.sections.map(s => ({ ...s }));
@@ -1192,7 +1312,7 @@ The sheet: ${JSON.stringify(numbered)}
 Check every formula, sign, condition and theorem statement (the official formula pages and the lecture notes decide), that the notation is the course's, that the LaTeX is valid KaTeX, and that nothing is said twice in different sections.
 Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "block" are the numbers above; "action" is "replace" (with the corrected block in "data") or "delete" (a duplicate; "data" is ignored); "why" in a few words. An empty list if everything is right.`), FS_FIXES_SCHEMA, 48000);
       const fixes = (out.fixes || []).filter(f => sections[f.section]?.blocks[f.block]);
-      for (const f of fixes.filter(f => f.action === 'replace')) { const b = fsCleanBlock(f.data); if (b.t) { sections[f.section].blocks = sections[f.section].blocks.map((x, k) => (k === f.block ? b : x)); fixed++; } }
+      for (const f of fixes.filter(f => f.action === 'replace' && f.data)) { const b = fsCleanBlock(f.data); if (b.t) { sections[f.section].blocks = sections[f.section].blocks.map((x, k) => (k === f.block ? b : x)); fixed++; } }
       for (const f of fixes.filter(f => f.action === 'delete').sort((a, b) => b.block - a.block)) { sections[f.section].blocks = sections[f.section].blocks.filter((x, k) => k !== f.block); fixed++; }
       sections = sections.filter(s => s.blocks.length);
     } catch (e) {
@@ -1213,7 +1333,7 @@ Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "blo
             const out = await call(`Formula sheet "${plan.title}" (${courseLabel(sheet.course)}). The whole sheet is too long for its ${info.target} page(s).
 Shorten this section to about ${Math.round(over * 100)}% of its length: keep what an exam needs most (the סד״פ, the key formulas, the traps), drop derivations and what is obvious, merge rows. Same block types and style.
 The section: ${JSON.stringify(s)}
-Return {"blocks":[...]}.`, FS_BLOCKS_SCHEMA, 48000);
+Return {"blocks":[...]}.`, FS_BLOCKS_SCHEMA, 48000, 'medium');
             return out.blocks?.length ? { ...s, blocks: out.blocks } : s;
           } catch (e) { if (e?.cancelled) throw e; return s; }
         }));
