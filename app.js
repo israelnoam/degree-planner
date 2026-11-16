@@ -1203,6 +1203,9 @@ function bindGoogleSection(root) {
   if (ts) ts.onchange = () => { Store.put('meta', 'settings', { tasksSync: ts.checked }); if (ts.checked) Sync.schedule(100); };
 }
 
+// The release you are running (the ?v= of the loaded scripts; sw.js carries the same number).
+const appVersion = () => [...document.scripts].map(s => (s.src.match(/[?&]v=(\d+)/) || [])[1]).find(Boolean) || '?';
+
 function renderSettings(root) {
   const last = Sync.lastSync ? new Date(Sync.lastSync).toLocaleString(LOCALE) : 'אף פעם';
   const st = settings();
@@ -1276,6 +1279,7 @@ function renderSettings(root) {
         <button class="btn" id="setFaq">📖 זכויות ושאלות נפוצות</button>
         <a class="btn ghost" href="privacy.html" target="_blank" rel="noopener">🔒 פרטיות</a>
       </div>
+      <p class="muted small" id="appVer">גרסת האפליקציה: <b>${esc(appVersion())}</b></p>
 
       ${installGuide()}
 

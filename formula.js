@@ -317,6 +317,7 @@ function renderSheetEditor(root, sheet) {
             <div class="fs-box-h"><b>🧭 אופי הקורס</b><button class="btn small" type="button" id="fsProfile">שנה</button></div>
             <div class="chips">${(sheet.profile || []).map(p => `<span class="chip">${FS_PROFILES[p] || esc(p)}</span>`).join('') || '<span class="muted">לא הוגדר</span>'}</div>
             ${sheet.brief?.emphasis ? `<p class="muted small">🎯 ${esc(sheet.brief.emphasis)}</p>` : ''}
+            ${sheet.ai ? `<p class="muted small" title="הערכה לפי מחירון ה-API; החיוב בפועל מופיע בחשבון Anthropic שלך">🧾 עלות היצירה: ${fsUsageText(sheet.ai)}</p>` : ''}
           </div>
           <div class="fs-box">
             <div class="fs-box-h"><b>📑 פרקים</b><button class="btn small" type="button" id="fsAddSec">＋ פרק</button></div>
@@ -425,6 +426,7 @@ function fsBlankHtml(sheet, gen) {
     ${hasKey ? '' : '<p class="muted small">ל"צור עם AI" צריך מפתח API של Anthropic. <button class="btn small" type="button" id="fsBlankKey">להגדרות AI</button></p>'}
     <p class="muted small">בלי מפתח: העתק את הבריף, שלח אותו ל-Claude עם חומרי הקורס, וייבא את קובץ ה-JSON שמתקבל. אפשר גם לבנות ידנית עם "＋ פרק".</p>
     <p class="muted small">גרסת האפליקציה: ${esc(document.querySelector('script[src*="formula.js"]')?.src.match(/v=(\d+)/)?.[1] || '?')}</p>
+    ${gen?.work?.used ? `<p class="muted small">🧾 נוצל עד עכשיו: ${fsUsageText(gen.work.used)}</p>` : ''}
   </div>`;
 }
 
@@ -901,6 +903,19 @@ function fsParseJson(text) {
   try { return JSON.parse(text.slice(a, b + 1)); } catch { throw new Error('ה-AI החזיר JSON שבור. נסה שוב.'); }
 }
 
+// Tokens and estimated cost. USD per million tokens for CV_MODEL (Claude Opus 5.5): input, output,
+// reading the cached sources, writing them to the cache. An estimate: the bill is in your Anthropic account.
+const FS_PRICE = { in: 4, out: 20, read: 0.2, write: 5 };
+function fsAddUsage(total, u) {
+  if (!u) return;
+  total.in += u.input_tokens || 0; total.out += u.output_tokens || 0;
+  total.read += u.cache_read_input_tokens || 0; total.write += u.cache_creation_input_tokens || 0;
+  total.calls = (total.calls || 0) + 1;
+}
+const fsUsd = u => ((u.in || 0) * FS_PRICE.in + (u.out || 0) * FS_PRICE.out + (u.read || 0) * FS_PRICE.read + (u.write || 0) * FS_PRICE.write) / 1e6;
+const fsK = n => (n >= 1000 ? Math.round(n / 1000) + 'K' : String(n || 0));
+const fsUsageText = u => `~$${fsUsd(u).toFixed(2)} (${fsK((u.in || 0) + (u.read || 0) + (u.write || 0))} טוקנים קלט, ${fsK(u.out)} פלט, ${u.calls || 0} בקשות)`;
+
 // A request with no sign of life for this long is treated as stuck and stopped.
 const FS_STALL_MS = 10 * 60_000;
 
@@ -935,6 +950,7 @@ async function fsAiCall(prompt, schema, opts = {}) {
       stream.on?.('streamEvent', () => { last = Date.now(); });
       if (onText) stream.on?.('text', d => onText(d));
       const response = await stream.finalMessage();
+      opts.onUsage?.(response.usage);
       if (response.stop_reason === 'refusal') throw new Error('הבקשה נדחתה');
       if (response.stop_reason === 'max_tokens') throw new Error('התשובה נחתכה (ארוכה מדי). נסה בקשה מצומצמת יותר.');
       const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
@@ -1106,7 +1122,8 @@ async function fsGenerate(id, files, usePangea, useDrive) {
   };
   let stage = 'הכנת החומרים'; // named in the error, so a failure says where it happened
   const say = (text, name) => { if (name) stage = name; setStatus(`<span class="muted">${text}</span>`); };
-  const call = (content, schema, maxTokens) => fsAiCall(content, schema, { maxTokens, effort: FS_GEN_EFFORT, signal: ac.signal });
+  const used = work.used = work.used || { in: 0, out: 0, read: 0, write: 0, calls: 0 }; // kept across "try again"
+  const call = (content, schema, maxTokens) => fsAiCall(content, schema, { maxTokens, effort: FS_GEN_EFFORT, signal: ac.signal, onUsage: u => fsAddUsage(used, u) });
   try {
     say('📖 מכין את החומרים…');
     const sheet = Store.get('sheet', id);
@@ -1210,8 +1227,8 @@ Return {"blocks":[...]}.`, FS_BLOCKS_SCHEMA, 48000);
     const left = work.src.left;
     delete fsGen[id];
     if (currentView === 'formula' && !fsOpenId) setTimeout(render, 0);
-    Store.put('sheet', id, { title: plan.title || sheet.title, profile: plan.profile?.length ? plan.profile : sheet.profile, sections: sections.map(s => ({ id: fsId(), ...s })), coverage: plan.coverage || [] });
-    toast(`✨ הנוסחאון מוכן (${fsClock(Date.now() - t0)})${checked ? (fixed ? ` · ${fixed} תיקונים בבדיקה` : ' · נבדק מול המקורות') : ' · שלב הבדיקה נכשל, כדאי לבקש "בדוק שהנוסחאות נכונות" בעזרה מ-AI'}${left.length ? ` · לא נקראו: ${left.join(', ')}` : ''}`);
+    Store.put('sheet', id, { title: plan.title || sheet.title, profile: plan.profile?.length ? plan.profile : sheet.profile, sections: sections.map(s => ({ id: fsId(), ...s })), coverage: plan.coverage || [], ai: { ...used, at: Date.now() } });
+    toast(`✨ הנוסחאון מוכן (${fsClock(Date.now() - t0)}) · ${fsUsageText(used).split(' (')[0]}${checked ? (fixed ? ` · ${fixed} תיקונים בבדיקה` : ' · נבדק מול המקורות') : ' · שלב הבדיקה נכשל, כדאי לבקש "בדוק שהנוסחאות נכונות" בעזרה מ-AI'}${left.length ? ` · לא נקראו: ${left.join(', ')}` : ''}`);
   } catch (e) {
     console.error(e);
     const partial = e?.fsPartial || (work.outline && !e?.cancelled ? 'מה שכבר נוצר נשמר; "נסה שוב" ימשיך מאותה נקודה.' : '');
