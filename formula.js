@@ -274,7 +274,7 @@ function renderSheetList(root) {
         <button type="button" class="fs-item" data-open="${esc(s.id)}">
           <span class="fs-thumb">📐</span>
           <span><b>${esc(s.title || 'נוסחאון')}</b><small class="muted">${esc(courseLabel(s.course) || '')} · ${(s.sections || []).length} פרקים · ${s.pages || 2} עמ׳</small>
-          <span class="chips">${(s.profile || []).map(p => `<span class="chip">${FS_PROFILES[p] || p}</span>`).join('')}</span></span>
+          <span class="chips">${fsGen[s.id]?.state === 'run' ? '<span class="chip">✨ בבנייה ברקע…</span>' : fsGen[s.id]?.state === 'error' ? '<span class="chip">⚠️ היצירה לא הושלמה</span>' : ''}${(s.profile || []).map(p => `<span class="chip">${FS_PROFILES[p] || p}</span>`).join('')}</span></span>
         </button>`).join('')}</div>`
       : `<div class="fs-empty"><p>עוד אין נוסחאונים.</p><p class="muted">אפשר להתחיל מנוסחאון חדש, או לפתוח את הדוגמה (מכניקת מוצקים 1, בנויה מחדש מהנוסחאון שלך) כדי לראות איך זה עובד.</p></div>`}
       ${typeof FS_SAMPLE_SOLIDS !== 'undefined' ? `<div class="actions" style="justify-content:flex-start"><button class="btn" type="button" id="fsSample">📄 פתח דוגמה: מכניקת מוצקים 1</button></div>` : ''}
@@ -410,7 +410,7 @@ function renderSheetEditor(root, sheet) {
 
 // The empty sheet: what happened, and how to fill it.
 function fsBlankHtml(sheet, gen) {
-  if (gen?.state === 'run') return `<div class="fs-blank"><div class="fs-blank-ic">✨</div><h3>הנוסחאון בבנייה</h3><p id="fsGenMsg">${gen.html}</p><p class="muted small">קודם תכנון, אחר כך כל הפרקים נכתבים בו-זמנית, ואז בדיקה מול המקורות. בדרך כלל 2-5 דקות. אפשר להמשיך לעבוד באפליקציה, רק לא לסגור אותה.</p><div class="fs-blank-acts"><button class="btn small" type="button" data-fsgen-cancel>✖ בטל</button></div></div>`;
+  if (gen?.state === 'run') return `<div class="fs-blank"><div class="fs-blank-ic">✨</div><h3>הנוסחאון בבנייה</h3><p id="fsGenMsg">${gen.html}</p><p class="muted small">קודם תכנון, אחר כך כל הפרקים נכתבים בו-זמנית, ואז בדיקה מול המקורות. זה רץ ברקע: אפשר לעבור לכל מסך אחר באפליקציה, ותקבל הודעה כשהנוסחאון מוכן. רק לא לסגור או לרענן את האפליקציה.</p><div class="fs-blank-acts"><button class="btn small" type="button" data-fsgen-cancel>✖ בטל</button></div></div>`;
   const hasKey = !!claudeKey();
   return `<div class="fs-blank">
     <div class="fs-blank-ic">${gen ? '⚠️' : '📄'}</div>
@@ -424,6 +424,7 @@ function fsBlankHtml(sheet, gen) {
     </div>
     ${hasKey ? '' : '<p class="muted small">ל"צור עם AI" צריך מפתח API של Anthropic. <button class="btn small" type="button" id="fsBlankKey">להגדרות AI</button></p>'}
     <p class="muted small">בלי מפתח: העתק את הבריף, שלח אותו ל-Claude עם חומרי הקורס, וייבא את קובץ ה-JSON שמתקבל. אפשר גם לבנות ידנית עם "＋ פרק".</p>
+    <p class="muted small">גרסת האפליקציה: ${esc(document.querySelector('script[src*="formula.js"]')?.src.match(/v=(\d+)/)?.[1] || '?')}</p>
   </div>`;
 }
 
@@ -901,7 +902,7 @@ function fsParseJson(text) {
 }
 
 // A request with no sign of life for this long is treated as stuck and stopped.
-const FS_STALL_MS = 4 * 60_000;
+const FS_STALL_MS = 10 * 60_000;
 
 // One request to Claude that returns JSON. opts: { maxTokens, effort, signal, onText } (or just maxTokens).
 async function fsAiCall(prompt, schema, opts = {}) {
@@ -939,7 +940,7 @@ async function fsAiCall(prompt, schema, opts = {}) {
       const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
       return fsCleanOut(strict ? JSON.parse(text) : fsParseJson(text));
     } catch (e) {
-      if (stalled) throw new Error('אין תגובה מ-Anthropic כבר 4 דקות, הבקשה נעצרה.');
+      if (stalled) throw new Error('אין תגובה מ-Anthropic כבר 10 דקות, הבקשה נעצרה.');
       if (signal?.aborted) throw Object.assign(new Error('היצירה בוטלה'), { cancelled: true });
       throw e;
     } finally {
@@ -1017,9 +1018,7 @@ const FS_FIXES_SCHEMA = {
 };
 const fsWait = (ms, signal) => new Promise((res, rej) => { const t = setTimeout(res, ms); signal?.addEventListener('abort', () => { clearTimeout(t); rej(Object.assign(new Error('היצירה בוטלה'), { cancelled: true })); }); });
 const fsClock = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
-// The running clock and the cancel button of a generation (the editor is redrawn often, so both
-// are wired once here instead of on each draw).
-setInterval(() => { const g = fsGen[fsOpenId]; if (g?.state === 'run') $$('.fs-clock').forEach(el => { el.textContent = fsClock(Date.now() - g.t0); }); }, 1000);
+// The cancel button of a generation (the editor is redrawn often, so it is wired once here).
 document.addEventListener('click', e => { if (e.target.closest?.('[data-fsgen-cancel]')) fsGen[fsOpenId]?.cancel?.(); });
 
 // Reads everything you attached (and the Drive folder / Pangea if asked) into text and documents.
@@ -1099,12 +1098,14 @@ async function fsGenerate(id, files, usePangea, useDrive) {
   // The status lives in fsGen, so it survives every redraw of the editor (sync, edits, tab switches).
   const setStatus = (html, state = 'run') => {
     fsGen[id] = { state, html, files: given, usePangea, useDrive, work, t0, cancel: () => ac.abort() };
+    if (currentView === 'formula' && !fsOpenId && state !== 'run') render(); // the list shows the sheet's state
     if (fsOpenId !== id || currentView !== 'formula') return;
     const st = $('#fsStatus'); if (st) st.innerHTML = html;
     const msg = $('#fsGenMsg');
     if (msg && state === 'run') msg.innerHTML = html; else if ($('#fsSheet .fs-blank')) render();
   };
-  const say = text => setStatus(`<span class="muted">${text} · <span class="fs-clock">${fsClock(Date.now() - t0)}</span></span>`);
+  let stage = 'הכנת החומרים'; // named in the error, so a failure says where it happened
+  const say = (text, name) => { if (name) stage = name; setStatus(`<span class="muted">${text}</span>`); };
   const call = (content, schema, maxTokens) => fsAiCall(content, schema, { maxTokens, effort: FS_GEN_EFFORT, signal: ac.signal });
   try {
     say('📖 מכין את החומרים…');
@@ -1119,12 +1120,12 @@ async function fsGenerate(id, files, usePangea, useDrive) {
 
     // 1. The plan.
     if (!work.outline) {
-      say('🧭 שלב 1/4: מתכנן את הפרקים');
+      say('🧭 שלב 1/4: מתכנן את הפרקים', 'תכנון הפרקים');
       const out = await call(step(`STEP 1: PLAN the sheet. Do not write any blocks yet.
 Return:
 - "title" and "profile".
 - "sections", in the order they appear on the sheet (about ${Math.max(5, Math.round(budget / 45))} of them). For each: "title"; "brief": exactly what goes into it (sub-topics, the named formulas and theorems, which סד״פ / tables / traps / examples), precise enough that a writer who sees only this plan and the sources writes it with no overlap with the other sections and nothing forgotten; "lines": its share of the space in short lines (the shares add up to about ${budget}). Give the most room to what the exams and the student's emphasis need.
-- "coverage": every syllabus topic with status in / partial / missing and a short note.`), FS_OUTLINE_SCHEMA, 16000);
+- "coverage": every syllabus topic with status in / partial / missing and a short note.`), FS_OUTLINE_SCHEMA, 48000);
       out.sections = (out.sections || []).filter(s => s?.title);
       if (!out.sections.length) throw new Error('ה-AI לא החזיר תכנון פרקים. נסה שוב.');
       work.outline = out;
@@ -1136,6 +1137,7 @@ Return:
     // 2. Every section, all at the same time. One that fails is tried again by itself.
     const done = () => work.sections.filter(Boolean).length;
     const progress = () => say(`✍️ שלב 2/4: כותב את כל ${n} הפרקים במקביל · ${done()}/${n} מוכנים`);
+    stage = 'כתיבת הפרקים';
     progress();
     const errors = [];
     await Promise.all(plan.sections.map(async (s, i) => {
@@ -1146,7 +1148,7 @@ Return:
 The plan of the whole sheet: ${planText}
 Write ONLY section ${i + 1}: "${s.title}". Its content: ${s.brief}
 Room: about ${s.lines} short lines (a "kv" row ≈ 1, a centered "eq" ≈ 2, a table row ≈ 1.3, a step or list item ≈ 1-2). Fill it; do not go more than 10% over. Do not repeat what the plan gives to other sections.
-Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SCHEMA, 24000);
+Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SCHEMA, 48000);
           if (!out.blocks?.length) throw new Error('פרק ריק');
           work.sections[i] = { title: s.title, blocks: out.blocks };
           progress();
@@ -1166,12 +1168,12 @@ Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SC
     // 3. One check of everything against the sources. A failure here doesn't cost you the sheet.
     let fixed = 0, checked = true;
     try {
-      say('🔎 שלב 3/4: בודק נוסחאות מול המקורות');
+      say('🔎 שלב 3/4: בודק נוסחאות מול המקורות', 'בדיקה');
       const numbered = sections.map((s, si) => ({ section: si, title: s.title, blocks: s.blocks.map((b, bi) => ({ block: bi, ...b })) }));
       const out = await call(step(`STEP 3: CHECK the written sheet against the sources.
 The sheet: ${JSON.stringify(numbered)}
 Check every formula, sign, condition and theorem statement (the official formula pages and the lecture notes decide), that the notation is the course's, that the LaTeX is valid KaTeX, and that nothing is said twice in different sections.
-Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "block" are the numbers above; "action" is "replace" (with the corrected block in "data") or "delete" (a duplicate; "data" is ignored); "why" in a few words. An empty list if everything is right.`), FS_FIXES_SCHEMA, 24000);
+Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "block" are the numbers above; "action" is "replace" (with the corrected block in "data") or "delete" (a duplicate; "data" is ignored); "why" in a few words. An empty list if everything is right.`), FS_FIXES_SCHEMA, 48000);
       const fixes = (out.fixes || []).filter(f => sections[f.section]?.blocks[f.block]);
       for (const f of fixes.filter(f => f.action === 'replace')) { const b = fsCleanBlock(f.data); if (b.t) { sections[f.section].blocks = sections[f.section].blocks.map((x, k) => (k === f.block ? b : x)); fixed++; } }
       for (const f of fixes.filter(f => f.action === 'delete').sort((a, b) => b.block - a.block)) { sections[f.section].blocks = sections[f.section].blocks.filter((x, k) => k !== f.block); fixed++; }
@@ -1184,7 +1186,7 @@ Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "blo
 
     // 4. Does it fit? Measured with the real layout; if not, every section is shortened (again all at once).
     try {
-      say('📏 שלב 4/4: מודד התאמה לעמודים');
+      say('📏 שלב 4/4: מודד התאמה לעמודים', 'התאמה לעמודים');
       const info = await fsLayout({ ...sheet, sections, autofit: true }, document.createElement('div'));
       const over = info && (info.pages > info.target ? 0.75 : info.scale < 0.82 ? 0.88 : 0);
       if (over) {
@@ -1194,7 +1196,7 @@ Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "blo
             const out = await call(`Formula sheet "${plan.title}" (${courseLabel(sheet.course)}). The whole sheet is too long for its ${info.target} page(s).
 Shorten this section to about ${Math.round(over * 100)}% of its length: keep what an exam needs most (the סד״פ, the key formulas, the traps), drop derivations and what is obvious, merge rows. Same block types and style.
 The section: ${JSON.stringify(s)}
-Return {"blocks":[...]}.`, FS_BLOCKS_SCHEMA, 24000);
+Return {"blocks":[...]}.`, FS_BLOCKS_SCHEMA, 48000);
             return out.blocks?.length ? { ...s, blocks: out.blocks } : s;
           } catch (e) { if (e?.cancelled) throw e; return s; }
         }));
@@ -1207,12 +1209,13 @@ Return {"blocks":[...]}.`, FS_BLOCKS_SCHEMA, 24000);
     if (!fsHasContent({ sections })) throw new Error('ה-AI החזיר נוסחאון ריק. נסה שוב; אם זה חוזר, צרף חומרי קורס או פרט יותר בדגשים.');
     const left = work.src.left;
     delete fsGen[id];
+    if (currentView === 'formula' && !fsOpenId) setTimeout(render, 0);
     Store.put('sheet', id, { title: plan.title || sheet.title, profile: plan.profile?.length ? plan.profile : sheet.profile, sections: sections.map(s => ({ id: fsId(), ...s })), coverage: plan.coverage || [] });
     toast(`✨ הנוסחאון מוכן (${fsClock(Date.now() - t0)})${checked ? (fixed ? ` · ${fixed} תיקונים בבדיקה` : ' · נבדק מול המקורות') : ' · שלב הבדיקה נכשל, כדאי לבקש "בדוק שהנוסחאות נכונות" בעזרה מ-AI'}${left.length ? ` · לא נקראו: ${left.join(', ')}` : ''}`);
   } catch (e) {
     console.error(e);
     const partial = e?.fsPartial || (work.outline && !e?.cancelled ? 'מה שכבר נוצר נשמר; "נסה שוב" ימשיך מאותה נקודה.' : '');
-    setStatus(`<span class="bad">${e?.cancelled ? 'היצירה בוטלה.' : `היצירה נכשלה: ${aiErrorHtml(e)}`}</span>${partial || (e?.cancelled && work.outline) ? ` <span class="muted">${esc(partial || '"נסה שוב" ימשיך מאותה נקודה.')}</span>` : ''}`, 'error');
+    setStatus(`<span class="bad">${e?.cancelled ? 'היצירה בוטלה.' : `היצירה נכשלה בשלב "${stage}": ${aiErrorHtml(e)}`}</span>${partial || (e?.cancelled && work.outline) ? ` <span class="muted">${esc(partial || '"נסה שוב" ימשיך מאותה נקודה.')}</span>` : ''}`, 'error');
   }
 }
 
