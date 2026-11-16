@@ -821,12 +821,15 @@ const FS_STYLE_GUIDE = `STYLE (the student's own standard theme, learned from th
 - Dense, exam-ready, no fluff. Vectors underlined (\\underline{r}) when the course does so.
 FIGURES (only when the course profile includes "figures"): draw your own clean SVG (viewBox, ~240x150), white background, black 1.2px lines, blue #1d4ed8 for geometry/vectors, red #dc2626 for forces/loads, labels as <text> with font-family="KaTeX_Math, serif" font-style="italic". Model them on the diagrams in the course material (free-body diagrams, beams, supports, Mohr's circle, cross-sections). No figures for courses without "figures".`;
 
+// Every field is required: a schema with many optional fields is too heavy for the API to compile
+// ("Grammar compilation timed out"). The model leaves unused fields empty and fsCleanBlock drops them.
 const FS_BLOCK_SCHEMA = {
-  type: 'object', additionalProperties: false, required: ['t'],
+  type: 'object', additionalProperties: false,
+  required: ['t', 'md', 'label', 'tex', 'note', 'title', 'variant', 'style', 'items', 'code', 'svg', 'caption', 'width', 'head', 'rows'],
   properties: {
     t: { type: 'string', enum: Object.keys(FS_BLOCKS) },
     md: { type: 'string' }, label: { type: 'string' }, tex: { type: 'string' }, note: { type: 'string' },
-    title: { type: 'string' }, variant: { type: 'string', enum: ['tip', 'trap', 'note'] }, style: { type: 'string', enum: ['square', 'bullet', 'num'] },
+    title: { type: 'string' }, variant: { type: 'string', enum: ['', 'tip', 'trap', 'note'] }, style: { type: 'string', enum: ['', 'square', 'bullet', 'num'] },
     items: { type: 'array', items: { type: 'string' } }, code: { type: 'string' }, svg: { type: 'string' }, caption: { type: 'string' }, width: { type: 'number' },
     head: { type: 'array', items: { type: 'string' } }, rows: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
   },
@@ -842,7 +845,7 @@ const FS_SHEET_SCHEMA = {
     title: { type: 'string' },
     profile: { type: 'array', items: { type: 'string', enum: Object.keys(FS_PROFILES) } },
     sections: FS_SECTIONS_SCHEMA.properties.sections,
-    coverage: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'status'], properties: { topic: { type: 'string' }, status: { type: 'string', enum: ['in', 'partial', 'missing'] }, note: { type: 'string' } } } },
+    coverage: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'status', 'note'], properties: { topic: { type: 'string' }, status: { type: 'string', enum: ['in', 'partial', 'missing'] }, note: { type: 'string' } } } },
   },
 };
 
@@ -868,22 +871,58 @@ Block types (field "t"): ${Object.entries(FS_BLOCKS).map(([t, [l, f]]) => `${t} 
 "rows" is an array of arrays of strings; table cells may hold an inline <svg>.`;
 }
 
+// Drops the fields a block doesn't use (the schema makes the model send all of them, empty).
+function fsCleanBlock(b) {
+  const out = {};
+  for (const [k, v] of Object.entries(b || {})) {
+    if (v === '' || v == null || (Array.isArray(v) && !v.length) || (k === 'width' && !v)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+function fsCleanOut(out) {
+  if (Array.isArray(out?.blocks)) out.blocks = out.blocks.map(fsCleanBlock).filter(b => b.t);
+  if (Array.isArray(out?.sections)) out.sections = out.sections.filter(s => s && typeof s === 'object').map(s => ({ ...s, title: String(s.title || ''), blocks: (Array.isArray(s.blocks) ? s.blocks : []).map(fsCleanBlock).filter(b => b.t) }));
+  if (Array.isArray(out?.coverage)) out.coverage = out.coverage.filter(c => c?.topic).map(c => (c.note ? c : { topic: c.topic, status: c.status }));
+  return out;
+}
+// The JSON object inside a free-text answer (with or without a ```json fence around it).
+function fsParseJson(text) {
+  const a = text.indexOf('{'), b = text.lastIndexOf('}');
+  if (a < 0 || b <= a) throw new Error('ה-AI לא החזיר JSON תקין. נסה שוב.');
+  try { return JSON.parse(text.slice(a, b + 1)); } catch { throw new Error('ה-AI החזיר JSON שבור. נסה שוב.'); }
+}
+
 async function fsAiCall(prompt, schema, maxTokens = 16000) {
   const client = await claudeClient();
-  const stream = client.beta.messages.stream({
-    model: CV_MODEL,
-    max_tokens: maxTokens,
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
-    output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
-    system: FS_SYSTEM,
-    // prompt: text, or content blocks (text + PDF documents for scanned material)
-    messages: [{ role: 'user', content: prompt }],
-  });
-  const response = await stream.finalMessage();
-  if (response.stop_reason === 'refusal') throw new Error('הבקשה נדחתה');
-  if (response.stop_reason === 'max_tokens') throw new Error('התשובה נחתכה (ארוכה מדי). נסה בקשה מצומצמת יותר.');
-  return JSON.parse(response.content.filter(b => b.type === 'text').map(b => b.text).join(''));
+  const ask = async strict => {
+    const extra = strict
+      ? 'Every block object carries every field of the schema: leave the fields that block type does not use empty ("" for text, [] for lists, 0 for width).'
+      : `Answer with ONE JSON object only (no prose, no code fence), matching this JSON schema; omit the fields a block type does not use:\n${JSON.stringify(schema)}`;
+    const stream = client.beta.messages.stream({
+      model: CV_MODEL,
+      max_tokens: maxTokens,
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+      output_config: { effort: 'medium', ...(strict ? { format: { type: 'json_schema', schema } } : {}) },
+      system: `${FS_SYSTEM}\n${extra}`,
+      // prompt: text, or content blocks (text + PDF documents for scanned material)
+      messages: [{ role: 'user', content: prompt }],
+    });
+    const response = await stream.finalMessage();
+    if (response.stop_reason === 'refusal') throw new Error('הבקשה נדחתה');
+    if (response.stop_reason === 'max_tokens') throw new Error('התשובה נחתכה (ארוכה מדי). נסה בקשה מצומצמת יותר.');
+    const text = response.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    return fsCleanOut(strict ? JSON.parse(text) : fsParseJson(text));
+  };
+  try { return await ask(true); }
+  catch (e) {
+    // The API couldn't use the schema (too complex / compile timeout): same request as plain JSON.
+    const msg = String(e?.error?.error?.message || e?.message || '');
+    if (!/grammar|schema|compil/i.test(msg)) throw e;
+    console.warn('formula sheet: structured output unavailable, retrying as plain JSON:', msg);
+    return ask(false);
+  }
 }
 
 function fsAiDialog(sheet) {
