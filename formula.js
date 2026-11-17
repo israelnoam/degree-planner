@@ -1045,7 +1045,8 @@ ${scope === 'all' ? 'The whole sheet' : 'One section of it'}:\n${JSON.stringify(
 // reference (formulas, notation, question types). Sheets are then written from the digest instead
 // of from the full materials, so each sheet costs a fraction of the input. Saved as a record of
 // kind "digest" (id = course code), so it syncs like everything else.
-const fsDigestRun = {}; // course code → true while its digest is being prepared
+const fsDigestRun = {}; // course code → the stage while its digest is being prepared
+const fsDigestErr = {}; // course code → { msg, stage, at } of the last failed attempt (kept until the next one)
 const fsDigest = code => Store.get('digest', code);
 const fsDigestInfo = d => `${new Date(d.at).toLocaleDateString(LOCALE)} · ${d.n || 0} מקורות · כ-${fsK(Math.round(d.text.length / 2.5))} טוקנים`;
 const fsDigestTask = c => `TASK: write the COURSE DIGEST for "${c?.name || ''}" (${c?.code || ''}): one dense reference document from which exam formula sheets will later be written WITHOUT access to these sources. Whatever is not in the digest will not reach the sheet, so be complete on substance and ruthless on fluff.
@@ -1059,27 +1060,35 @@ Hebrew prose, math in LaTeX. No introduction and no study advice. As long as the
 
 async function fsMakeDigest(code, files, usePangea, useDrive) {
   if (fsDigestRun[code]) return toast('התקציר של הקורס הזה כבר בהכנה…');
-  fsDigestRun[code] = true;
   const c = courseByCode(code);
   const used = { in: 0, out: 0, read: 0, write: 0, calls: 0 };
-  const say = t => toast(`📚 תקציר ${c?.name || code}: ${String(t).replace(/<[^>]+>/g, '')}`);
+  let stage = 'קריאת החומרים';
+  const say = (t, name) => { if (name) stage = name; fsDigestRun[code] = String(t).replace(/<[^>]+>/g, ''); toast(`📚 תקציר ${c?.name || code}: ${fsDigestRun[code]}`); fsDigestRefresh(code); };
+  delete fsDigestErr[code];
+  say('קורא את החומרים…');
   if (currentView === 'formula' && !fsOpenId) render();
   try {
-    say('קורא את החומרים…');
     const src = await fsReadMaterials({ course: code }, files, usePangea, useDrive, say, '');
-    if (!src.count) throw new Error('לא נבחרו חומרים, ואין ממה להכין תקציר.');
-    say('Claude מזקק את החומרים (כמה דקות, רץ ברקע)…');
-    const text = (await fsAiText([...src.docs, { type: 'text', text: `${fsDigestTask(c)}\n\nSOURCES:\n${src.text}` }], { maxTokens: 48000, effort: 'high', onUsage: u => fsAddUsage(used, u) })).trim();
+    if (!src.count) throw new Error('לא נבחרו חומרים (או שאף קובץ לא נקרא), ואין ממה להכין תקציר.');
+    say(`Claude מזקק ${src.count} מקורות${src.docs.length ? ` (${src.docs.length} סרוקים)` : ''}. כמה דקות, רץ ברקע…`, 'הזיקוק ב-Claude');
+    const text = (await fsAiText([...src.docs, { type: 'text', text: `${fsDigestTask(c)}\n\nSOURCES:\n${src.text}` }], { maxTokens: 120000, effort: 'high', onUsage: u => fsAddUsage(used, u) })).trim();
     if (text.length < 500) throw new Error('התקציר שחזר קצר מדי. נסה שוב.');
     Store.put('digest', code, { text, at: Date.now(), n: src.count, ai: used });
     toast(`📚 התקציר של ${c?.name || code} מוכן · ${fsUsageText(used).split(' (')[0]}${src.left.length ? ` · לא נקראו: ${src.left.join(', ')}` : ''} · עכשיו אפשר ליצור ממנו נוסחאון`);
   } catch (e) {
-    console.error(e);
-    toast(`הכנת התקציר נכשלה: ${aiError(e).text}`);
+    console.error('course digest failed at', stage, e);
+    fsDigestErr[code] = { msg: aiError(e).text, stage, at: Date.now(), used: used.calls ? { ...used } : null };
+    toast(`הכנת התקציר נכשלה בשלב "${stage}": ${aiError(e).text}`);
   } finally {
     delete fsDigestRun[code];
+    fsDigestRefresh(code);
     if (currentView === 'formula' && !fsOpenId && !$('#modal').open) render();
   }
+}
+// Redraws the state line of an open digest dialog for this course.
+function fsDigestRefresh(code) {
+  const sel = $('#modal[open] #fsDigestState') && $('#modal #fsCourse');
+  if (sel && sel.value === code) sel.dispatchEvent(new Event('change'));
 }
 
 function fsDigestDialog(code0) {
@@ -1103,13 +1112,15 @@ function fsDigestDialog(code0) {
     const sel = $('#fsCourse', form);
     const draw = () => {
       const code = sel.value, d = fsDigest(code), box = $('#fsDigestState', form);
-      box.innerHTML = fsDigestRun[code] ? '<p class="muted small">📚 התקציר של הקורס הזה בהכנה כרגע…</p>'
+      const err = fsDigestErr[code];
+      box.innerHTML = (err ? `<p class="bad small">⚠️ הניסיון האחרון (${new Date(err.at).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' })}) נכשל בשלב "${esc(err.stage)}": ${esc(err.msg)}${err.used ? ` · נוצל ${esc(fsUsageText(err.used).split(' (')[0])}` : ''}</p>` : '')
+        + (fsDigestRun[code] ? `<p class="muted small">📚 בהכנה כרגע: ${esc(fsDigestRun[code])}</p>`
         : d ? `<p class="small"><b class="ok">✓ יש תקציר</b> · ${esc(fsDigestInfo(d))}${d.ai ? ` · עלה ${esc(fsUsageText(d.ai).split(' (')[0])}` : ''}. הכנה מחדש תחליף אותו.</p>
           <details class="set-sub"><summary>הצג / ערוך את התקציר</summary>
             <textarea id="fsDigestText" rows="14" style="width:100%">${esc(d.text)}</textarea>
             <div class="row wrap"><button type="button" class="btn small" id="fsDigestSave">שמור שינויים</button><button type="button" class="btn small danger" id="fsDigestDel">מחק תקציר</button></div>
           </details>`
-        : '<p class="muted small">עוד אין תקציר לקורס הזה.</p>';
+        : '<p class="muted small">עוד אין תקציר לקורס הזה.</p>');
       if ($('#fsDigestSave', form)) $('#fsDigestSave', form).onclick = () => { Store.put('digest', code, { text: $('#fsDigestText', form).value.trim() }); toast('התקציר נשמר'); };
       if ($('#fsDigestDel', form)) $('#fsDigestDel', form).onclick = () => { if (confirm('למחוק את תקציר הקורס?')) { Store.remove('digest', code); draw(); } };
       fsPangeaCheck(form, code);
@@ -1186,7 +1197,8 @@ async function fsReadMaterials(sheet, files, usePangea, useDrive, say, digest) {
         if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') {
           const { text: t, pages } = await fsPdfText(f);
           if (t.replace(/\s/g, '').length < pages * 150) { // mostly scans
-            if (docPages + pages <= 90 && docBytes + f.size <= 22e6) {
+            // A request may be at most 32MB, and a scan is sent in base64 (a third bigger).
+            if (docPages + pages <= 90 && docBytes + f.size <= 16e6) {
               docPages += pages; docBytes += f.size;
               docs.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: await fsBase64(f) }, title: f.name, context: `source kind: ${k} (${l})` });
               text += `\n--- ${f.name}: scanned, attached as a document ---\n`;
