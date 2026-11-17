@@ -209,3 +209,14 @@ dialog.wide { width: min(980px, 96vw); max-width: 96vw; }
 .fs-theme-standard .fs-sec { margin-top: .9em; }
 .fs-col > .fs-unit:first-child .fs-sec { margin-top: 0; }
 .fs-pick-hint { margin: 6px 0 4px; line-height: 1.5; }
+/* Fast or economy (batch) generation */
+.fs-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.fs-mode { display: flex; gap: 8px; align-items: flex-start; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; cursor: pointer; margin: 0; }
+.fs-mode:has(input:checked) { border-color: var(--blue); }
+.fs-mode input { width: 16px; height: 16px; margin-top: 3px; }
+.fs-mode > span { display: flex; flex-direction: column; gap: 2px; font-size: .9rem; }
+@media (max-width: 600px) { .fs-modes { grid-template-columns: 1fr; } }
+.fs-batch .fs-eta { font-size: 1.05rem; }
+.fs-batch-howto { text-align: start; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; margin: 10px 0; }
+.fs-batch-howto ul { margin: 6px 0 0; padding-inline-start: 1.2em; }
+.fs-batch-howto li { margin: 3px 0; }

@@ -275,7 +275,7 @@ function renderSheetList(root) {
         <button type="button" class="fs-item" data-open="${esc(s.id)}">
           <span class="fs-thumb">📐</span>
           <span><b>${esc(s.title || 'נוסחאון')}</b><small class="muted">${esc(courseLabel(s.course) || '')} · ${(s.sections || []).length} פרקים · ${s.pages || 2} עמ׳</small>
-          <span class="chips">${fsGen[s.id]?.state === 'run' ? '<span class="chip">✨ בבנייה ברקע…</span>' : fsGen[s.id]?.state === 'error' ? '<span class="chip">⚠️ היצירה לא הושלמה</span>' : ''}${(s.profile || []).map(p => `<span class="chip">${FS_PROFILES[p] || p}</span>`).join('')}</span></span>
+          <span class="chips">${fsJob('sheet:' + s.id) ? `<span class="chip">${fsJob('sheet:' + s.id).error ? '⚠️ היצירה החסכונית נעצרה' : '⏳ בתור החסכוני'}</span>` : ''}${fsGen[s.id]?.state === 'run' ? '<span class="chip">✨ בבנייה ברקע…</span>' : fsGen[s.id]?.state === 'error' ? '<span class="chip">⚠️ היצירה לא הושלמה</span>' : ''}${(s.profile || []).map(p => `<span class="chip">${FS_PROFILES[p] || p}</span>`).join('')}</span></span>
         </button>`).join('')}</div>`
       : `<div class="fs-empty"><p>עוד אין נוסחאונים.</p><p class="muted">אפשר להתחיל מנוסחאון חדש, או לפתוח את הדוגמה (מכניקת מוצקים 1, בנויה מחדש מהנוסחאון שלך) כדי לראות איך זה עובד.</p></div>`}
       ${typeof FS_SAMPLE_SOLIDS !== 'undefined' ? `<div class="actions" style="justify-content:flex-start"><button class="btn" type="button" id="fsSample">📄 פתח דוגמה: מכניקת מוצקים 1</button></div>` : ''}
@@ -383,7 +383,15 @@ function renderSheetEditor(root, sheet) {
     const sec = e.target.closest('.fs-sec');
     if (sec) fsSectionDialog(sheet, +sec.dataset.sec);
   };
-  const gen = fsGen[sheet.id];
+  const gen = fsGen[sheet.id], job = fsJob('sheet:' + sheet.id);
+  if (!secs.length && job) {
+    fsLayoutToken++;
+    $('#fsStatus', root).innerHTML = job.error ? `<span class="bad">⚠️ ${esc(job.error)}</span>` : `<span class="muted">⏳ בתור החסכוני · שלב ${FS_STAGES[job.stage]?.[1] || 1}/3</span>`;
+    pagesHost.innerHTML = fsBatchCardHtml(job);
+    pagesHost.style.zoom = '';
+    pagesHost.onclick = null;
+    return;
+  }
   if (!secs.length) {
     // Nothing to lay out: say so and offer the ways to fill it, instead of a blank page that looks "done".
     fsLayoutToken++;
@@ -747,7 +755,7 @@ function fsPangeaCheck(form, code) {
   const gNote = $('#fsDigestNote', form), gBox = $('#fsDigest', form), dg = fsDigest(code);
   if (gNote && gBox) {
     gBox.disabled = !dg; gBox.checked = !!dg;
-    gNote.textContent = fsDigestRun[code] ? `בהכנה: ${fsDigestRun[code]}` : dg ? `מוכן · ${fsDigestInfo(dg)}. הנוסחאון ייכתב ממנו (זול ומהיר)` : 'אין עדיין. מומלץ להכין לפני היצירה: חוסך טוקנים בכל נוסחאון של הקורס';
+    gNote.textContent = fsDigestRun[code] ? `בהכנה: ${fsDigestRun[code]}` : fsJob('digest:' + code) && !fsJob('digest:' + code).error ? `⏳ בתור החסכוני, מוכן בערך ב-${fsJobEta(fsJob('digest:' + code)).at}${dg ? ' (בינתיים: התקציר הקודם)' : ''}` : dg ? `מוכן · ${fsDigestInfo(dg)}. הנוסחאון ייכתב ממנו (זול ומהיר)` : 'אין עדיין. מומלץ להכין לפני היצירה: חוסך טוקנים בכל נוסחאון של הקורס';
     const mk = $('#fsDigestMake', form);
     if (mk) { mk.textContent = dg ? '📚 עדכן / הצג תקציר' : '📚 הכן תקציר קורס'; mk.onclick = () => { $('#modal').close(); setTimeout(() => fsDigestDialog(code), 30); }; }
   }
@@ -796,8 +804,14 @@ function fsGenerateDialog(sheet) {
   openModal(`<h2>✨ יצירת הנוסחאון עם AI</h2>
     <p class="muted">הבריף כבר שמור (${sheet.pages} עמ׳, ${sheet.cols} עמודות${sheet.brief?.emphasis ? `, דגש: ${esc(sheet.brief.emphasis)}` : ''}). צרף חומרים, או צור בלי חומרים לפי הסילבוס הרגיל של הקורס.</p>
     <div class="field"><span class="field-label">📂 חומרים (לפי סדר העדיפות). קבצי PDF נקראים במכשיר בלבד.</span>${fsSourcesHtml()}</div>
+    ${fsModeHtml('sheet')}
     <div class="actions"><button class="btn" value="cancel" formnovalidate>ביטול</button><button class="btn primary" value="ai">✨ צור</button></div>`, (action, fd) => {
     if (action !== 'ai') return;
+    if (fsWantsBatch(fd)) {
+      if (!fsDigest(sheet.course)) { toast('במצב חסכוני הנוסחאון נכתב מתקציר הקורס. הכן קודם תקציר (📚 הכן תקציר קורס), או בחר ⚡ מהיר.'); return false; }
+      fsBatchStartSheet(sheet.id);
+      return;
+    }
     if (fd.get('cdrive') && fsDriveNeedsAccess()) return false;
     fsGenerate(sheet.id, fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'), !!fd.get('digest'));
   }, form => fsPangeaCheck(form, sheet.course));
@@ -858,6 +872,13 @@ function fsNewSheet(courseCode) {
       return;
     }
     if (action !== 'ai') return;
+    if (fsWantsBatch(fd)) {
+      if (!fsDigest(code)) { toast('במצב חסכוני הנוסחאון נכתב מתקציר הקורס. הכן קודם תקציר (📚 הכן תקציר קורס), או בחר ⚡ מהיר.'); return false; }
+      Store.put('sheet', id, sheet);
+      fsOpenId = id; go('formula');
+      fsBatchStartSheet(id);
+      return;
+    }
     if (fd.get('cdrive') && fsDriveNeedsAccess()) return false;
     Store.put('sheet', id, sheet);
     fsOpenId = id; go('formula');
@@ -1005,7 +1026,7 @@ function fsAddUsage(total, u) {
   total.read += u.cache_read_input_tokens || 0; total.write += u.cache_creation_input_tokens || 0;
   total.calls = (total.calls || 0) + 1;
 }
-const fsUsd = u => ((u.in || 0) * FS_PRICE.in + (u.out || 0) * FS_PRICE.out + (u.read || 0) * FS_PRICE.read + (u.write || 0) * FS_PRICE.write) / 1e6;
+const fsUsd = u => ((u.in || 0) * FS_PRICE.in + (u.out || 0) * FS_PRICE.out + (u.read || 0) * FS_PRICE.read + (u.write || 0) * FS_PRICE.write) / 1e6 * (u.batch ? 0.5 : 1); // batches: half price
 const fsK = n => (n >= 1000 ? Math.round(n / 1000) + 'K' : String(n || 0));
 const fsUsageText = u => `~$${fsUsd(u).toFixed(2)} (${fsK((u.in || 0) + (u.read || 0) + (u.write || 0))} טוקנים קלט, ${fsK(u.out)} פלט, ${u.calls || 0} בקשות)`;
 
@@ -1056,11 +1077,10 @@ async function fsAiRaw(prompt, tail, opts = {}) {
 // that mode couldn't compile this schema, and it made every block carry all 15 fields.
 async function fsAiCall(prompt, schema, opts = {}) {
   if (typeof opts === 'number') opts = { maxTokens: opts };
-  const text = await fsAiRaw(prompt, `FORMAT: answer with ONE JSON object only (no prose, no code fence), matching the JSON schema below. Give each block only the fields its type uses. Inside JSON strings every LaTeX backslash is doubled ("\\\\frac{a}{b}", "\\\\theta").
-${JSON.stringify(schema)}`, opts);
+  const text = await fsAiRaw(prompt, fsJsonTail(schema), opts);
   return fsCleanOut(fsParseJson(text));
 }
-const fsAiText = (prompt, opts) => fsAiRaw(prompt, 'FORMAT: plain text with Markdown headings and lists, math in $...$. No JSON.', opts);
+const fsAiText = (prompt, opts) => fsAiRaw(prompt, FS_TEXT_TAIL, opts);
 
 function fsAiDialog(sheet) {
   const secs = sheet.sections || [];
@@ -1134,6 +1154,8 @@ function fsDigestChunks(items) {
   return chunks;
 }
 
+const fsDigestPartAsk = (c, i, total, ch, room) => `${fsDigestTask(c)}\n\nTHIS REQUEST: you see only PART ${i + 1} of ${total} of the materials (${ch.names.join(', ')}). Digest ONLY what is in this part, under the same headings; the parts are joined in order afterwards, so no introduction and no summary. Length: up to about ${room} tokens.\n\nSOURCES:\n${ch.text}`;
+
 async function fsMakeDigest(code, files, usePangea, useDrive) {
   if (fsDigestRun[code]) return toast('התקציר של הקורס הזה כבר בהכנה…');
   const c = courseByCode(code);
@@ -1160,7 +1182,7 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
         const ch = chunks[i], room = Math.max(1500, Math.round(15000 * ch.weight / total));
         for (let attempt = 1; ; attempt++) {
           try {
-            outs[i] = (await fsAiText([...ch.docs, { type: 'text', text: `${fsDigestTask(c)}\n\nTHIS REQUEST: you see only PART ${i + 1} of ${chunks.length} of the materials (${ch.names.join(', ')}). Digest ONLY what is in this part, under the same headings; the parts are joined in order afterwards, so no introduction and no summary. Length: up to about ${room} tokens.\n\nSOURCES:\n${ch.text}` }], { maxTokens: 32000, effort: 'medium', onUsage: u => fsAddUsage(used, u) })).trim();
+            outs[i] = (await fsAiText([...ch.docs, { type: 'text', text: fsDigestPartAsk(c, i, chunks.length, ch, room) }], { maxTokens: 32000, effort: 'medium', onUsage: u => fsAddUsage(used, u) })).trim();
             break;
           } catch (e) {
             if (attempt >= 2 || e?.status === 401 || e?.status === 403 || /credit balance/i.test(String(e?.message))) { failed.push({ i, e }); break; }
@@ -1207,17 +1229,19 @@ function fsDigestDialog(code0) {
       <optgroup label="כל הקורסים">${list.filter(c => c.status !== 'active').map(opt).join('')}</optgroup></select></label>
     <div id="fsDigestState"></div>
     <div class="field"><span class="field-label">📂 חומרים לתקציר. קבצי PDF נקראים במכשיר בלבד.</span>${fsSourcesHtml(false)}</div>
+    ${fsModeHtml('digest')}
     ${hasKey ? '' : '<p class="bad small">צריך מפתח API של Anthropic (בלשונית קו״ח ← הגדרות AI).</p>'}
     <div class="actions"><button class="btn" value="cancel" formnovalidate>סגור</button><button class="btn primary" value="make" ${hasKey ? '' : 'disabled'}>📚 הכן תקציר</button></div>`, (action, fd) => {
     if (action !== 'make') return;
     if (fd.get('cdrive') && fsDriveNeedsAccess()) return false;
-    fsMakeDigest(String(fd.get('course')), fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'));
+    (fsWantsBatch(fd) ? fsBatchStartDigest : fsMakeDigest)(String(fd.get('course')), fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'));
   }, form => {
     const sel = $('#fsCourse', form);
     const draw = () => {
       const code = sel.value, d = fsDigest(code), box = $('#fsDigestState', form);
       const err = fsDigestErr[code];
       box.innerHTML = (err ? `<p class="bad small">⚠️ הניסיון האחרון (${new Date(err.at).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' })}) נכשל בשלב "${esc(err.stage)}": ${esc(err.msg)}${err.used ? ` · נוצל ${esc(fsUsageText(err.used).split(' (')[0])}` : ''}</p>` : '')
+        + (fsJob('digest:' + code) ? (fsJob('digest:' + code).error ? `<p class="bad small">⚠️ התקציר החסכוני נעצר: ${esc(fsJob('digest:' + code).error)} <button type="button" class="btn small" data-djob-clear="${esc(code)}">הסר</button></p>` : `<p class="small">⏳ <b>בתור החסכוני</b> · התחיל ב-${fsHm(fsJob('digest:' + code).at)} · מוכן בערך ב-<b>${fsJobEta(fsJob('digest:' + code)).at}</b> (בעוד כ-${fsJobEta(fsJob('digest:' + code)).min} דק׳). אפשר לסגור את החלון; תקבל התראה. <button type="button" class="btn small" data-djob-cancel="${esc(code)}">✖ בטל</button></p>`) : '')
         + (fsDigestRun[code] ? `<p class="muted small">📚 בהכנה כרגע: ${esc(fsDigestRun[code])}</p>`
         : d ? `<p class="small"><b class="ok">✓ יש תקציר</b> · ${esc(fsDigestInfo(d))}${d.ai ? ` · עלה ${esc(fsUsageText(d.ai).split(' (')[0])}` : ''}. הכנה מחדש תחליף אותו.</p>
           <details class="set-sub"><summary>הצג / ערוך את התקציר</summary>
@@ -1256,6 +1280,299 @@ function fsKeepRank(b, kind, k, all) {
   if (b.t === 'table' || b.t === 'symbols') return kind === 'method' ? 3 : 9;
   return 9;
 }
+
+// ---------- the step prompts (the same for a direct run and a batch run) ----------
+const fsPlanAsk = budget => `STEP 1: PLAN the sheet. Do not write any blocks yet.
+Return:
+- "title" and "profile".
+- "sections": the exam problem types of the course, one section each, in the course's order, following THE FIXED TEMPLATE (about ${Math.max(6, Math.round(budget / 32))} of them; reference sections last). For each: "title" (the problem type's name); "kind" ("method", "theory" or "reference"); "brief": what the writer puts in each part of the template (how to recognise it, the steps, the key formulas, the idea of the one example, the traps), precise enough that a writer who sees only this plan and the sources writes it with no overlap with the other sections; "lines": its share of the space in short lines (the shares add up to about ${budget}). The most room goes to what the exams and the student's emphasis need.
+- "advice": empty, unless the course needs something other than the template (e.g. a theory section that every method depends on should come first, or a topic with no method at all). Then one or two short Hebrew sentences of recommendation to the student.
+- "coverage": every syllabus topic with status in / partial / missing and a short note.`;
+const fsSectionAsk = (planText, i, s) => `STEP 2: WRITE ONE SECTION of the sheet.
+The plan of the whole sheet: ${planText}
+Write ONLY section ${i + 1}: "${s.title}", a "${s.kind || 'method'}" section of THE FIXED TEMPLATE, in the template's order. Its content: ${s.brief}
+Room: about ${s.lines} short lines (a "kv" row ≈ 1, a centered "eq" ≈ 2, a table row ≈ 1.3, a step or list item ≈ 1-2). Fill it; do not go more than 10% over. Do not repeat what the plan gives to other sections.
+Return {"blocks":[...]} (the section title is added by the app).`;
+const fsCheckAsk = numbered => `STEP 3: CHECK the written sheet against the sources.
+The sheet: ${JSON.stringify(numbered)}
+Check every formula, sign, condition and theorem statement (the official formula pages and the lecture notes decide), that the notation is the course's, that the LaTeX is valid KaTeX, that every "method" section has its "זיהוי", its סד״פ, ONE "דוגמת בזק" and its trap callout (and no sub-headings), and that nothing is said twice in different sections.
+Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "block" are the numbers above; "action" is "replace" (with the corrected block in "data") or "delete" (a duplicate; "data" is ignored); "why" in a few words. An empty list if everything is right.`;
+const fsPlanText = plan => JSON.stringify(plan.sections.map((s, i) => ({ n: i + 1, title: s.title, brief: s.brief, lines: s.lines })));
+const fsNumbered = sections => sections.map((s, si) => ({ section: si, title: s.title, blocks: s.blocks.map((b, bi) => ({ block: bi, ...b })) }));
+// The check's answer applied: corrected blocks replaced, duplicates removed, template order restored.
+function fsApplyFixes(sections, out) {
+  sections = sections.map(s => ({ ...s, blocks: [...s.blocks] }));
+  let fixed = 0;
+  const fixes = (out?.fixes || []).filter(f => sections[f.section]?.blocks[f.block]);
+  for (const f of fixes.filter(f => f.action === 'replace' && f.data)) { const b = fsCleanBlock(f.data); if (b.t) { sections[f.section].blocks[f.block] = b; fixed++; } }
+  for (const f of fixes.filter(f => f.action === 'delete').sort((a, b) => b.block - a.block)) { sections[f.section].blocks.splice(f.block, 1); fixed++; }
+  return { sections: sections.filter(s => s.blocks.length).map(s => ({ ...s, blocks: fsShape(s.blocks, s.kind) })), fixed };
+}
+// Too long for the pages: hide the least important blocks, in three rounds (no AI involved).
+async function fsFitLocal(sheet, sections) {
+  let hid = 0;
+  const fits = async () => { const info = await fsLayout({ ...sheet, sections, autofit: true }, document.createElement('div')); return !info || (info.pages <= info.target && info.scale >= 0.8); };
+  for (let level = 1; level <= 3 && !(await fits()); level++) {
+    sections = sections.map(s => ({ ...s, blocks: s.blocks.map((b, k) => { if (b.hidden || fsKeepRank(b, s.kind, k, s.blocks) > level) return b; hid++; return { ...b, hidden: true }; }) }));
+  }
+  return { sections, hid };
+}
+
+document.addEventListener('click', e => {
+  const c = e.target.closest?.('[data-djob-cancel]'), x = e.target.closest?.('[data-djob-clear]');
+  if (c) fsBatchCancel('digest:' + c.dataset.djobCancel).then(() => fsDigestRefresh(c.dataset.djobCancel));
+  if (x) { fsJobPut('digest:' + x.dataset.djobClear, null); fsDigestRefresh(x.dataset.djobClear); }
+});
+
+// ---------- economy mode: the Message Batches API ----------
+// The same requests (same model, same prompts) sent as a batch: half the price, but answered
+// within up to an hour instead of minutes. A sheet goes through three batches in a row (plan →
+// sections → check). The job is saved on this device, so closing the app loses nothing: on the
+// next start the app looks at the batch again and carries on.
+// A sheet in economy mode is written from the course digest only, so every stage can be rebuilt
+// after a restart without the original files.
+const LS_FS_MODE = 'pp_fs_mode', LS_FS_JOBS = 'pp_fs_jobs', LS_FS_BATCH_HIST = 'pp_fs_batch_hist';
+const FS_STAGES = { plan: ['תכנון הפרקים', 1], sections: ['כתיבת הפרקים', 2], check: ['בדיקה מול המקורות', 3], digest: ['זיקוק תקציר הקורס', 1] };
+const FS_STAGE_GUESS = { plan: 10, sections: 15, check: 10, digest: 15 }; // minutes, before there is history
+
+const fsJobs = () => { try { return JSON.parse(lsGet(LS_FS_JOBS, '{}')) || {}; } catch { return {}; } };
+function fsJobPut(key, job) { const all = fsJobs(); if (job) all[key] = job; else delete all[key]; lsSet(LS_FS_JOBS, JSON.stringify(all)); }
+const fsJob = key => fsJobs()[key] || null;
+
+const fsJsonTail = schema => `FORMAT: answer with ONE JSON object only (no prose, no code fence), matching the JSON schema below. Give each block only the fields its type uses. Inside JSON strings every LaTeX backslash is doubled ("\\\\frac{a}{b}", "\\\\theta").
+${JSON.stringify(schema)}`;
+const FS_TEXT_TAIL = 'FORMAT: plain text with Markdown headings and lists, math in $...$. No JSON.';
+// One request of a batch: exactly what a direct call sends (a batch can't carry "fallbacks").
+function fsBatchReq(id, prompt, tail, maxTokens, effort) {
+  const content = typeof prompt === 'string' ? `${prompt}\n\n${tail}` : [...prompt, { type: 'text', text: tail }];
+  return { custom_id: id, params: { model: CV_MODEL, max_tokens: maxTokens, system: FS_SYSTEM, output_config: { effort }, messages: [{ role: 'user', content }] } };
+}
+
+// How long a stage takes, from your earlier batches (median of the last 10), else a general guess.
+function fsStageMinutes(stage) {
+  let h = [];
+  try { h = (JSON.parse(lsGet(LS_FS_BATCH_HIST, '{}')) || {})[stage] || []; } catch {}
+  if (!h.length) return { min: FS_STAGE_GUESS[stage], n: 0 };
+  const s = [...h].sort((a, b) => a - b);
+  return { min: Math.max(1, Math.round(s[Math.floor(s.length / 2)] / 60000)), n: h.length };
+}
+function fsStageDone(stage, ms) {
+  let all = {};
+  try { all = JSON.parse(lsGet(LS_FS_BATCH_HIST, '{}')) || {}; } catch {}
+  all[stage] = [...(all[stage] || []), ms].slice(-10);
+  lsSet(LS_FS_BATCH_HIST, JSON.stringify(all));
+}
+// When the whole job should be ready: what is left of this stage plus the stages after it.
+function fsJobEta(job) {
+  const order = job.type === 'digest' ? ['digest'] : ['plan', 'sections', 'check'];
+  const cur = fsStageMinutes(job.stage);
+  let min = Math.max(1, cur.min - (Date.now() - job.at) / 60000);
+  for (const st of order.slice(order.indexOf(job.stage) + 1)) min += fsStageMinutes(st).min;
+  const at = new Date(Date.now() + min * 60000);
+  return { min: Math.round(min), at: at.toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' }), learned: cur.n };
+}
+const fsHm = t => new Date(t).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' });
+
+// ---- the mode choice (shown in the create and digest dialogs) ----
+const fsModeHtml = what => {
+  const m = lsGet(LS_FS_MODE, 'fast');
+  return `<div class="field"><span class="field-label">⏱️ אופן היצירה</span><div class="fs-modes">
+    <label class="fs-mode"><input type="radio" name="mode" value="fast" ${m !== 'batch' ? 'checked' : ''}><span><b>⚡ מהיר</b><small class="muted">כמה דקות, מחיר מלא</small></span></label>
+    <label class="fs-mode"><input type="radio" name="mode" value="batch" ${m === 'batch' ? 'checked' : ''}><span><b>💰 חסכוני (חצי מחיר)</b><small class="muted">אותו מודל ואותה איכות, בתור של Anthropic: בדרך כלל עד שעה${what === 'sheet' ? ' לכל אחד משלושת השלבים' : ''}, עם התראה כשמוכן.${what === 'sheet' ? ' נכתב מתקציר הקורס בלבד.' : ''}</small></span></label>
+  </div></div>`;
+};
+const fsWantsBatch = fd => { const b = fd.get('mode') === 'batch'; lsSet(LS_FS_MODE, b ? 'batch' : 'fast'); return b; };
+function fsAskNotify() {
+  try { if (window.Notification && Notification.permission === 'default') Notification.requestPermission(); } catch {}
+}
+function fsNotify(title, body) {
+  toast(`${title} · ${body}`);
+  try { if (window.Notification && Notification.permission === 'granted' && document.visibilityState !== 'visible') new Notification(title, { body, icon: 'icons/icon-192.png', tag: 'fs-batch' }); } catch {}
+}
+
+// ---- starting ----
+async function fsBatchSubmit(key, job, requests) {
+  const client = await claudeClient();
+  const b = await client.messages.batches.create({ requests });
+  fsJobPut(key, { ...job, batchId: b.id, at: Date.now(), counts: null, error: '' });
+  fsBatchSchedule(5000);
+  fsBatchRedraw(key);
+}
+const fsSheetShared = sheet => {
+  const d = fsDigest(sheet.course);
+  return [{ type: 'text', text: `${fsBriefTask(sheet)}\n\nSOURCES:\n<course_digest note="prepared earlier from the full course materials; treat it as the main source">\n${d?.text || ''}\n</course_digest>`, cache_control: { type: 'ephemeral' } }];
+};
+async function fsBatchStartSheet(id) {
+  const sheet = Store.get('sheet', id), key = 'sheet:' + id;
+  if (!fsDigest(sheet?.course)) return toast('במצב חסכוני הנוסחאון נכתב מתקציר הקורס, ולקורס הזה עוד אין תקציר. הכן קודם תקציר (📚).');
+  if (fsJob(key) && !fsJob(key).error) return toast('הנוסחאון הזה כבר בתור החסכוני');
+  fsAskNotify();
+  try {
+    const used = { in: 0, out: 0, read: 0, write: 0, calls: 0, batch: true };
+    await fsBatchSubmit(key, { type: 'sheet', id, stage: 'plan', t0: Date.now(), used },
+      [fsBatchReq('plan', [...fsSheetShared(sheet), { type: 'text', text: fsPlanAsk(fsLineBudget(sheet)) }], fsJsonTail(FS_OUTLINE_SCHEMA), 48000, 'high')]);
+    toast('💰 נשלח לתור החסכוני. תקבל התראה כשהנוסחאון מוכן.');
+  } catch (e) { console.error(e); toast(`השליחה לתור נכשלה: ${aiError(e).text}`); }
+}
+async function fsBatchStartDigest(code, files, usePangea, useDrive) {
+  const key = 'digest:' + code, c = courseByCode(code);
+  if (fsJob(key) && !fsJob(key).error) return toast('התקציר של הקורס הזה כבר בתור החסכוני');
+  fsAskNotify();
+  fsDigestRun[code] = 'קורא את החומרים…'; fsDigestRefresh(code);
+  try {
+    const src = await fsReadMaterials({ course: code }, files, usePangea, useDrive, t => { fsDigestRun[code] = String(t).replace(/<[^>]+>/g, ''); fsDigestRefresh(code); }, '');
+    if (!src.count) throw new Error('לא נבחרו חומרים (או שאף קובץ לא נקרא), ואין ממה להכין תקציר.');
+    const chunks = fsDigestChunks(src.items);
+    const total = chunks.reduce((s, ch) => s + ch.weight, 0) || 1;
+    const used = { in: 0, out: 0, read: 0, write: 0, calls: 0, batch: true };
+    await fsBatchSubmit(key, { type: 'digest', code, stage: 'digest', t0: Date.now(), used, names: chunks.map(ch => ch.names), count: src.count, left: src.left },
+      chunks.map((ch, i) => fsBatchReq('p' + i, [...ch.docs, { type: 'text', text: fsDigestPartAsk(c, i, chunks.length, ch, Math.max(1500, Math.round(15000 * ch.weight / total))) }], FS_TEXT_TAIL, 32000, 'medium')));
+    toast(`💰 התקציר של ${c?.name || code} נשלח לתור החסכוני (${chunks.length} חלקים). תקבל התראה כשמוכן.`);
+  } catch (e) { console.error(e); toast(`הכנת התקציר נכשלה: ${aiError(e).text}`); }
+  finally { delete fsDigestRun[code]; fsDigestRefresh(code); }
+}
+
+// ---- watching ----
+let fsBatchTimer = null, fsBatchBusy = false;
+function fsBatchSchedule(ms = 60000) { clearTimeout(fsBatchTimer); if (Object.keys(fsJobs()).length) fsBatchTimer = setTimeout(fsBatchPoll, ms); }
+async function fsBatchPoll() {
+  if (fsBatchBusy || !claudeKey() || !navigator.onLine) return fsBatchSchedule();
+  fsBatchBusy = true;
+  try {
+    for (const [key, job] of Object.entries(fsJobs())) {
+      if (job.error || !job.batchId) continue;
+      try {
+        const client = await claudeClient();
+        const b = await client.messages.batches.retrieve(job.batchId);
+        if (b.processing_status !== 'ended') { fsJobPut(key, { ...job, counts: b.request_counts, checked: Date.now() }); fsBatchRedraw(key); continue; }
+        const res = {};
+        for await (const r of await client.messages.batches.results(job.batchId)) {
+          if (r.result?.type === 'succeeded') {
+            const m = r.result.message;
+            fsAddUsage(job.used, m.usage);
+            res[r.custom_id] = m.stop_reason === 'refusal' ? { error: 'הבקשה נדחתה' } : m.stop_reason === 'max_tokens' ? { error: 'התשובה נחתכה' } : { text: m.content.filter(x => x.type === 'text').map(x => x.text).join('') };
+          } else res[r.custom_id] = { error: r.result?.type === 'expired' ? 'פג הזמן בתור' : r.result?.type === 'canceled' ? 'בוטל' : (r.result?.error?.error?.message || r.result?.error?.type || 'שגיאה') };
+        }
+        fsStageDone(job.stage, Date.now() - job.at);
+        await fsBatchAdvance(key, job, res);
+      } catch (e) {
+        console.error('batch', key, e);
+        if (e?.status === 404 || e?.status === 401) fsJobPut(key, { ...job, error: aiError(e).text });
+      }
+      fsBatchRedraw(key);
+    }
+  } finally { fsBatchBusy = false; fsBatchSchedule(); }
+}
+const fsBatchFail = (key, job, msg) => { fsJobPut(key, { ...job, error: msg }); fsNotify('⚠️ היצירה החסכונית נעצרה', msg); };
+
+// A stage has ended: read its answers and send the next stage (or finish).
+async function fsBatchAdvance(key, job, res) {
+  if (job.type === 'digest') {
+    const parts = job.names.map((names, i) => (res['p' + i]?.text ? `<!-- חלק ${i + 1}: ${names.join(', ')} -->\n${res['p' + i].text.trim()}` : ''));
+    const failed = job.names.filter((n, i) => !parts[i]);
+    if (failed.length > job.names.length / 2) return fsBatchFail(key, job, `רוב חלקי התקציר נכשלו (${Object.values(res).find(r => r.error)?.error || ''}). נסה שוב.`);
+    const text = parts.filter(Boolean).join('\n\n');
+    Store.put('digest', job.code, { text, at: Date.now(), n: job.count, ai: job.used });
+    fsJobPut(key, null);
+    const c = courseByCode(job.code);
+    fsNotify(`📚 התקציר של ${c?.name || job.code} מוכן`, `${fsUsageText(job.used).split(' (')[0]}${failed.length ? ` · ${failed.length} חלקים חסרים` : ''}. עכשיו אפשר ליצור ממנו נוסחאון.`);
+    return;
+  }
+  const sheet = Store.get('sheet', job.id);
+  if (!sheet) return fsJobPut(key, null); // the sheet was deleted meanwhile
+  const shared = fsSheetShared(sheet);
+  const step = text => [...shared, { type: 'text', text }];
+  if (job.stage === 'plan') {
+    let plan;
+    try { plan = fsCleanOut(fsParseJson(res.plan?.text || '')); } catch {}
+    plan && (plan.sections = (plan.sections || []).filter(s => s?.title));
+    if (!plan?.sections?.length) return fsBatchFail(key, job, `שלב התכנון לא החזיר פרקים${res.plan?.error ? ` (${res.plan.error})` : ''}.`);
+    const planText = fsPlanText(plan);
+    return fsBatchSubmit(key, { ...job, stage: 'sections', outline: plan, sections: [], retried: false },
+      plan.sections.map((s, i) => fsBatchReq('s' + i, step(fsSectionAsk(planText, i, s)), fsJsonTail(FS_BLOCKS_SCHEMA), 48000, 'medium')));
+  }
+  if (job.stage === 'sections') {
+    const plan = job.outline, sections = [...(job.sections || [])];
+    for (const [cid, r] of Object.entries(res)) {
+      const i = +cid.slice(1);
+      try { const out = fsCleanOut(fsParseJson(r.text || '')); if (out.blocks?.length) sections[i] = { title: plan.sections[i].title, kind: plan.sections[i].kind || 'method', blocks: fsShape(out.blocks, plan.sections[i].kind) }; } catch {}
+    }
+    const missing = plan.sections.map((s, i) => i).filter(i => !sections[i]);
+    if (missing.length && !job.retried) { // once more, only the ones that failed
+      const planText = fsPlanText(plan);
+      return fsBatchSubmit(key, { ...job, sections, retried: true },
+        missing.map(i => fsBatchReq('s' + i, step(fsSectionAsk(planText, i, plan.sections[i])), fsJsonTail(FS_BLOCKS_SCHEMA), 48000, 'medium')));
+    }
+    if (missing.length > plan.sections.length / 2) return fsBatchFail(key, job, 'רוב הפרקים לא נכתבו. נסה שוב.');
+    const done = sections.filter(Boolean);
+    return fsBatchSubmit(key, { ...job, stage: 'check', sections: done, lost: missing.map(i => plan.sections[i].title) },
+      [fsBatchReq('check', step(fsCheckAsk(fsNumbered(done))), fsJsonTail(FS_FIXES_SCHEMA), 48000, 'high')]);
+  }
+  if (job.stage === 'check') {
+    let sections = job.sections, fixed = 0, checked = true;
+    try { ({ sections, fixed } = fsApplyFixes(sections, fsCleanOut(fsParseJson(res.check?.text || '')))); } catch { checked = false; }
+    let hid = 0;
+    try { ({ sections, hid } = await fsFitLocal(sheet, sections)); } catch (e) { console.warn('fit', e); }
+    const plan = job.outline;
+    Store.put('sheet', job.id, { title: plan.title || sheet.title, profile: plan.profile?.length ? plan.profile : sheet.profile, sections: sections.map(s => ({ id: fsId(), ...s })), coverage: plan.coverage || [], advice: plan.advice || '', ai: { ...job.used, at: Date.now() } });
+    fsJobPut(key, null);
+    fsNotify(`📐 ${plan.title || sheet.title} מוכן`, `${fsUsageText(job.used).split(' (')[0]} (חצי מחיר)${checked ? (fixed ? ` · ${fixed} תיקונים בבדיקה` : ' · נבדק מול המקורות') : ''}${hid ? ` · ${hid} בלוקים הוסתרו כדי להיכנס לעמודים` : ''}${job.lost?.length ? ` · חסרים: ${job.lost.join(', ')}` : ''}`);
+  }
+}
+async function fsBatchCancel(key) {
+  const job = fsJob(key);
+  if (!job || !confirm('לבטל את היצירה החסכונית? מה שכבר חויב לא יוחזר.')) return;
+  try { if (!job.error) await (await claudeClient()).messages.batches.cancel(job.batchId); } catch (e) { console.warn(e); }
+  fsJobPut(key, null);
+  fsBatchRedraw(key);
+}
+function fsBatchRedraw(key) {
+  if (currentView !== 'formula') return;
+  if (!fsOpenId || key === 'sheet:' + fsOpenId) { if (!$('#modal').open) render(); }
+  if (key.startsWith('digest:')) fsDigestRefresh(key.slice(7));
+}
+
+// The waiting screen of a sheet in the economy queue.
+function fsBatchCardHtml(job) {
+  const [name, n] = FS_STAGES[job.stage] || ['', 1];
+  const eta = fsJobEta(job);
+  const counts = job.counts && job.stage === 'sections' ? ` · ${job.counts.succeeded + job.counts.errored}/${Object.values(job.counts).reduce((a, b) => a + b, 0)} פרקים עובדו` : '';
+  const notif = window.Notification ? Notification.permission : 'unsupported';
+  if (job.error) return `<div class="fs-blank"><div class="fs-blank-ic">⚠️</div><h3>היצירה החסכונית נעצרה</h3><p class="bad">${esc(job.error)}</p>
+    <div class="fs-blank-acts"><button class="btn primary" type="button" data-batch-retry>🔁 התחל מחדש בתור</button><button class="btn" type="button" data-batch-cancel>הסר</button></div></div>`;
+  return `<div class="fs-blank fs-batch">
+    <div class="fs-blank-ic">⏳</div>
+    <h3>הנוסחאון בתור החסכוני</h3>
+    <p><b>שלב ${n}/3: ${name}</b>${counts} · התחיל ב-${fsHm(job.at)}</p>
+    <p class="fs-eta">⏱️ הערכה: מוכן בערך ב-<b>${eta.at}</b> (בעוד כ-${eta.min} דק׳) <small class="muted">${eta.learned ? `לפי ${eta.learned} שלבים קודמים שלך` : 'הערכה כללית; תשתפר אחרי כמה ריצות'}. לרוב תוך שעה, ולכל היותר 24 שעות.</small></p>
+    <div class="fs-batch-howto">
+      <b>מה עכשיו?</b>
+      <ul>
+        <li>אפשר לעבור לכל מסך אחר ולהמשיך לעבוד. האפליקציה בודקת כל דקה, ו${notif === 'granted' ? 'תקפוץ התראה' : 'תופיע הודעה'} כשהנוסחאון מוכן.</li>
+        <li>אפשר גם לסגור את האפליקציה: בפתיחה הבאה <b>באותו מכשיר</b> היא תמשיך מאיפה שעצרה.</li>
+        <li>לא לערוך את הנוסחאון עד שהוא מוכן.</li>
+        <li>כשהוא מוכן: עבור על "💡 המלצת מבנה" ו"✅ כיסוי החומר", החזר בלוקים מוסתרים אם נשאר מקום, ואז 🖨️ PDF.</li>
+      </ul>
+    </div>
+    <div class="fs-blank-acts">
+      <button class="btn" type="button" data-batch-poll>🔄 בדוק עכשיו</button>
+      ${notif === 'default' ? '<button class="btn" type="button" data-batch-notify>🔔 אפשר התראות</button>' : ''}
+      <button class="btn" type="button" data-batch-cancel>✖ בטל</button>
+    </div>
+    ${job.checked ? `<p class="muted small">נבדק לאחרונה ב-${fsHm(job.checked)}</p>` : ''}
+  </div>`;
+}
+document.addEventListener('click', e => {
+  const t = e.target.closest?.('[data-batch-poll],[data-batch-cancel],[data-batch-notify],[data-batch-retry]');
+  if (!t || !fsOpenId) return;
+  const key = 'sheet:' + fsOpenId;
+  if (t.matches('[data-batch-poll]')) { t.disabled = true; fsBatchPoll().finally(() => fsBatchRedraw(key)); }
+  else if (t.matches('[data-batch-cancel]')) fsBatchCancel(key);
+  else if (t.matches('[data-batch-notify]')) { try { Notification.requestPermission().then(() => fsBatchRedraw(key)); } catch {} }
+  else if (t.matches('[data-batch-retry]')) { fsJobPut(key, null); fsBatchStartSheet(fsOpenId); }
+});
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && Object.keys(fsJobs()).length) fsBatchSchedule(1000); });
+setTimeout(() => fsBatchSchedule(3000), 0); // carry on with jobs from before the app was closed
 
 // ---------- full generation: plan → every section at once → check → fit ----------
 // One request for a whole sheet is slow and gets cut off at the answer-length limit. So: a short
@@ -1400,19 +1717,14 @@ async function fsGenerate(id, files, usePangea, useDrive, useDigest) {
     // 1. The plan.
     if (!work.outline) {
       say('🧭 שלב 1/4: מתכנן את הפרקים', 'תכנון הפרקים');
-      const out = await call(step(`STEP 1: PLAN the sheet. Do not write any blocks yet.
-Return:
-- "title" and "profile".
-- "sections": the exam problem types of the course, one section each, in the course's order, following THE FIXED TEMPLATE (about ${Math.max(6, Math.round(budget / 32))} of them; reference sections last). For each: "title" (the problem type's name); "kind" ("method", "theory" or "reference"); "brief": what the writer puts in each part of the template (how to recognise it, the steps, the key formulas, the idea of the one example, the traps), precise enough that a writer who sees only this plan and the sources writes it with no overlap with the other sections; "lines": its share of the space in short lines (the shares add up to about ${budget}). The most room goes to what the exams and the student's emphasis need.
-- "advice": empty, unless the course needs something other than the template (e.g. a theory section that every method depends on should come first, or a topic with no method at all). Then one or two short Hebrew sentences of recommendation to the student.
-- "coverage": every syllabus topic with status in / partial / missing and a short note.`), FS_OUTLINE_SCHEMA, 48000);
+      const out = await call(step(fsPlanAsk(budget)), FS_OUTLINE_SCHEMA, 48000);
       out.sections = (out.sections || []).filter(s => s?.title);
       if (!out.sections.length) throw new Error('ה-AI לא החזיר תכנון פרקים. נסה שוב.');
       work.outline = out;
       work.sections = [];
     }
     const plan = work.outline, n = plan.sections.length;
-    const planText = JSON.stringify(plan.sections.map((s, i) => ({ n: i + 1, title: s.title, brief: s.brief, lines: s.lines })));
+    const planText = fsPlanText(plan);
 
     // 2. Every section, all at the same time. One that fails is tried again by itself.
     const done = () => work.sections.filter(Boolean).length;
@@ -1424,11 +1736,7 @@ Return:
       if (work.sections[i]) return;
       for (let attempt = 1; ; attempt++) {
         try {
-          const out = await call(step(`STEP 2: WRITE ONE SECTION of the sheet.
-The plan of the whole sheet: ${planText}
-Write ONLY section ${i + 1}: "${s.title}", a "${s.kind || 'method'}" section of THE FIXED TEMPLATE, in the template's order. Its content: ${s.brief}
-Room: about ${s.lines} short lines (a "kv" row ≈ 1, a centered "eq" ≈ 2, a table row ≈ 1.3, a step or list item ≈ 1-2). Fill it; do not go more than 10% over. Do not repeat what the plan gives to other sections.
-Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SCHEMA, 48000, 'medium', onStart);
+          const out = await call(step(fsSectionAsk(planText, i, s)), FS_BLOCKS_SCHEMA, 48000, 'medium', onStart);
           if (!out.blocks?.length) throw new Error('פרק ריק');
           work.sections[i] = { title: s.title, kind: s.kind || 'method', blocks: fsShape(out.blocks, s.kind) };
           progress();
@@ -1458,15 +1766,9 @@ Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SC
     let fixed = 0, checked = true;
     try {
       say('🔎 שלב 3/4: בודק נוסחאות מול המקורות', 'בדיקה');
-      const numbered = sections.map((s, si) => ({ section: si, title: s.title, blocks: s.blocks.map((b, bi) => ({ block: bi, ...b })) }));
-      const out = await call(step(`STEP 3: CHECK the written sheet against the sources.
-The sheet: ${JSON.stringify(numbered)}
-Check every formula, sign, condition and theorem statement (the official formula pages and the lecture notes decide), that the notation is the course's, that the LaTeX is valid KaTeX, that every "method" section has its "זיהוי", its סד״פ, ONE "דוגמת בזק" and its trap callout (and no sub-headings), and that nothing is said twice in different sections.
-Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "block" are the numbers above; "action" is "replace" (with the corrected block in "data") or "delete" (a duplicate; "data" is ignored); "why" in a few words. An empty list if everything is right.`), FS_FIXES_SCHEMA, 48000);
-      const fixes = (out.fixes || []).filter(f => sections[f.section]?.blocks[f.block]);
-      for (const f of fixes.filter(f => f.action === 'replace' && f.data)) { const b = fsCleanBlock(f.data); if (b.t) { sections[f.section].blocks = sections[f.section].blocks.map((x, k) => (k === f.block ? b : x)); fixed++; } }
-      for (const f of fixes.filter(f => f.action === 'delete').sort((a, b) => b.block - a.block)) { sections[f.section].blocks = sections[f.section].blocks.filter((x, k) => k !== f.block); fixed++; }
-      sections = sections.filter(s => s.blocks.length).map(s => ({ ...s, blocks: fsShape(s.blocks, s.kind) }));
+      const numbered = fsNumbered(sections);
+      const out = await call(step(fsCheckAsk(numbered)), FS_FIXES_SCHEMA, 48000);
+      ({ sections, fixed } = fsApplyFixes(sections, out));
     } catch (e) {
       if (e?.cancelled || ac.signal.aborted) throw e;
       console.warn('formula sheet: check step failed', e);
@@ -1478,10 +1780,7 @@ Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "blo
     let hid = 0;
     try {
       say('📏 שלב 4/4: מודד התאמה לעמודים', 'התאמה לעמודים');
-      const fits = async () => { const info = await fsLayout({ ...sheet, sections, autofit: true }, document.createElement('div')); return !info || (info.pages <= info.target && info.scale >= 0.8); };
-      for (let level = 1; level <= 3 && !(await fits()); level++) {
-        sections = sections.map(s => ({ ...s, blocks: s.blocks.map((b, k) => { if (b.hidden || fsKeepRank(b, s.kind, k, s.blocks) > level) return b; hid++; return { ...b, hidden: true }; }) }));
-      }
+      ({ sections, hid } = await fsFitLocal(sheet, sections));
     } catch (e) {
       if (e?.cancelled || ac.signal.aborted) throw e;
       console.warn('formula sheet: fit step failed', e);
