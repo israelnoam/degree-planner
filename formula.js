@@ -658,7 +658,8 @@ const fsSourcesHtml = (withDigest = true) => `${withDigest ? `<div class="fs-sou
         <label class="fs-src"><span>💡 נוסחאון קיים לדוגמה והשראה<small class="muted">הסגנון והמבנה שלו ילמדו</small></span><input type="file" name="src_inspire" multiple accept=".pdf,.docx,.txt,.md,.tex,.json"></label>
         <label class="fs-src" id="fsPangeaRow"><span>💧 סיכומי פנגייה לקורס<small class="muted" id="fsPangeaNote">בודק…</small></span><input type="checkbox" name="pangea" id="fsPangea" disabled></label>
         <label class="fs-src" id="fsDriveRow"><span>📁 תיקיית ה-Drive של הקורס<small class="muted" id="fsDriveNote">בודק…</small></span><input type="checkbox" name="cdrive" id="fsDrive" disabled></label>
-      </div>`;
+      </div>
+      <details class="fs-drive-pick" id="fsDrivePick" hidden><summary>🗂️ בחר אילו קבצים מהדרייב לשלוח</summary><div id="fsDriveList"></div></details>`;
 
 // ---------- the course's Drive folder as a source ----------
 // The folder linked to the course (Tools → 📁 Drive). Each file is sorted into a source kind by
@@ -677,16 +678,55 @@ const FS_DRIVE_GDOC = 'application/vnd.google-apps.document';
 const fsDriveCanRead = () => Sync.connected && (Sync.hasScope('driveRead') || Sync.hasScope('driveWrite'));
 const fsDriveKind = f => (FS_DRIVE_RULES.find(([, re]) => re.test(`${f.cat || ''} / ${f.name}`)) || ['material'])[0];
 // The files worth reading (documents up to 20MB), newest first, a few per kind.
+// Every document in the folder that can be read, newest first.
+const fsDriveFiles = code => (CDrive.entry(code)?.files || [])
+  .filter(f => (/\.(pdf|docx|txt|md|tex)$/i.test(f.name) || f.mime === FS_DRIVE_GDOC) && f.size <= 20e6)
+  .sort((a, b) => String(b.mod).localeCompare(String(a.mod)));
+// The files you picked for a course (saved on this device); null = not picked yet, so the default.
+const LS_FS_DRIVE_PICK = 'pp_fs_drive_pick';
+function fsDrivePick(code, ids) {
+  let all = {};
+  try { all = JSON.parse(lsGet(LS_FS_DRIVE_PICK, '{}')) || {}; } catch {}
+  if (ids === undefined) return Array.isArray(all[code]) ? new Set(all[code]) : null;
+  if (ids === null) delete all[code]; else all[code] = [...ids];
+  lsSet(LS_FS_DRIVE_PICK, JSON.stringify(all));
+}
+// What will be sent, by source kind: your pick, or by default the newest few of each kind.
 function fsDrivePlan(code) {
-  const plan = {};
-  const files = (CDrive.entry(code)?.files || [])
-    .filter(f => (/\.(pdf|docx|txt|md|tex)$/i.test(f.name) || f.mime === FS_DRIVE_GDOC) && f.size <= 20e6)
-    .sort((a, b) => String(b.mod).localeCompare(String(a.mod)));
-  for (const f of files) {
+  const plan = {}, pick = fsDrivePick(code);
+  for (const f of fsDriveFiles(code)) {
     const k = fsDriveKind(f);
-    if ((plan[k] = plan[k] || []).length < FS_DRIVE_MAX[k]) plan[k].push(f);
+    if (pick ? pick.has(f.id) : (plan[k] || []).length < FS_DRIVE_MAX[k]) (plan[k] = plan[k] || []).push(f);
   }
   return plan;
+}
+const FS_KIND_NAMES = { exams: 'מבחנים', material: 'חומרי קורס', summaries: 'סיכומים', slides: 'הרצאות', tutorials: 'תרגולים', hw: 'שיעורי בית', inspire: 'נוסחאון' };
+// The checklist under the Drive row: every file, grouped by kind, ticked = sent.
+function fsDrivePickDraw(form, code, onChange) {
+  const box = $('#fsDriveList', form), wrap = $('#fsDrivePick', form);
+  if (!box || !wrap) return;
+  const files = fsDriveFiles(code);
+  wrap.hidden = !files.length;
+  if (!files.length) return;
+  const sent = new Set(Object.values(fsDrivePlan(code)).flat().map(f => f.id));
+  const groups = {};
+  for (const f of files) (groups[fsDriveKind(f)] = groups[fsDriveKind(f)] || []).push(f);
+  const order = [...FS_SOURCES.map(([k]) => k), 'inspire'];
+  const size = n => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1e3)) + 'KB');
+  box.innerHTML = `<div class="row wrap fs-pick-tools"><button type="button" class="btn small" data-pickall="1">סמן הכל</button><button type="button" class="btn small" data-pickall="0">נקה הכל</button><button type="button" class="btn small" data-pickall="d">ברירת מחדל</button><small class="muted">הבחירה נשמרת לקורס הזה. פחות קבצים = מהיר וזול יותר.</small></div>`
+    + order.filter(k => groups[k]).map(k => `<fieldset class="fs-pick-grp"><legend><label><input type="checkbox" data-pickgrp="${k}"> ${FS_KIND_NAMES[k]} <small class="muted">(${groups[k].length})</small></label></legend>
+      ${groups[k].map(f => `<label class="fs-pick-row"><input type="checkbox" data-pickid="${esc(f.id)}" ${sent.has(f.id) ? 'checked' : ''}><span>${esc(f.name)}</span><small class="muted">${esc(f.cat || '')} · ${size(f.size)}</small></label>`).join('')}</fieldset>`).join('');
+  const sync = () => {
+    $$('[data-pickgrp]', box).forEach(g => { const rows = $$(`[data-pickid]`, g.closest('fieldset')); const on = rows.filter(r => r.checked).length; g.checked = on === rows.length; g.indeterminate = on > 0 && on < rows.length; });
+  };
+  const save = () => { fsDrivePick(code, $$('[data-pickid]', box).filter(r => r.checked).map(r => r.dataset.pickid)); sync(); onChange(); };
+  $$('[data-pickid]', box).forEach(r => r.onchange = save);
+  $$('[data-pickgrp]', box).forEach(g => g.onchange = () => { $$('[data-pickid]', g.closest('fieldset')).forEach(r => { r.checked = g.checked; }); save(); });
+  $$('[data-pickall]', box).forEach(b => b.onclick = () => {
+    if (b.dataset.pickall === 'd') { fsDrivePick(code, null); fsDrivePickDraw(form, code, onChange); onChange(); return; }
+    $$('[data-pickid]', box).forEach(r => { r.checked = b.dataset.pickall === '1'; }); save();
+  });
+  sync();
 }
 async function fsDriveDownload(f) {
   const gdoc = f.mime === FS_DRIVE_GDOC;
@@ -717,10 +757,18 @@ function fsPangeaCheck(form, code) {
     dBox.disabled = true; dBox.checked = false;
     const show = () => {
       if ($('#fsCourse', form) && $('#fsCourse', form).value !== code) return; // the course was changed meanwhile
-      const plan = fsDrivePlan(code), n = Object.values(plan).reduce((s, a) => s + a.length, 0);
-      const names = { exams: 'מבחנים', material: 'חומרי קורס', summaries: 'סיכומים', slides: 'הרצאות', tutorials: 'תרגולים', hw: 'שיעורי בית', inspire: 'נוסחאון' };
-      dNote.textContent = n ? `${n} קבצים: ${Object.entries(plan).map(([k, a]) => `${a.length} ${names[k]}`).join(', ')}${fsDriveCanRead() ? '' : ' (יתבקש אישור קריאה מ-Google)'}` : 'לא נמצאו בתיקייה מסמכים (PDF / Word / טקסט)';
-      dBox.disabled = !n; dBox.checked = !!n && !useDg;
+      const note = () => {
+        const plan = fsDrivePlan(code), n = Object.values(plan).reduce((s, a) => s + a.length, 0), all = fsDriveFiles(code).length;
+        const mb = Object.values(plan).flat().reduce((s, f) => s + (f.size || 0), 0) / 1e6;
+        dNote.textContent = !all ? 'לא נמצאו בתיקייה מסמכים (PDF / Word / טקסט)'
+          : n ? `${n} מתוך ${all} קבצים (${mb.toFixed(1)}MB): ${Object.entries(plan).map(([k, a]) => `${a.length} ${FS_KIND_NAMES[k]}`).join(', ')}${fsDrivePick(code) ? ' · לפי הבחירה שלך' : ''}${fsDriveCanRead() ? '' : ' (יתבקש אישור קריאה מ-Google)'}`
+          : `לא נבחר אף קובץ (מתוך ${all}). בחר למטה`;
+        dBox.disabled = !n;
+        return n;
+      };
+      const n = note();
+      dBox.checked = !!n && !useDg;
+      fsDrivePickDraw(form, code, () => { const k = note(); if (!k) dBox.checked = false; else if (!useDg) dBox.checked = true; });
     };
     if (!Sync.connected) dNote.textContent = 'צריך קודם להתחבר ל-Google';
     else if (!c?.drive) dNote.textContent = 'לא קושרה תיקייה לקורס הזה (כלים ← 📁 תיקיית Drive)';
