@@ -706,7 +706,7 @@ function fsPangeaCheck(form, code) {
   const gNote = $('#fsDigestNote', form), gBox = $('#fsDigest', form), dg = fsDigest(code);
   if (gNote && gBox) {
     gBox.disabled = !dg; gBox.checked = !!dg;
-    gNote.textContent = fsDigestRun[code] ? 'בהכנה כרגע…' : dg ? `מוכן · ${fsDigestInfo(dg)}. הנוסחאון ייכתב ממנו (זול ומהיר)` : 'אין עדיין. מומלץ להכין לפני היצירה: חוסך טוקנים בכל נוסחאון של הקורס';
+    gNote.textContent = fsDigestRun[code] ? `בהכנה: ${fsDigestRun[code]}` : dg ? `מוכן · ${fsDigestInfo(dg)}. הנוסחאון ייכתב ממנו (זול ומהיר)` : 'אין עדיין. מומלץ להכין לפני היצירה: חוסך טוקנים בכל נוסחאון של הקורס';
     const mk = $('#fsDigestMake', form);
     if (mk) { mk.textContent = dg ? '📚 עדכן / הצג תקציר' : '📚 הכן תקציר קורס'; mk.onclick = () => { $('#modal').close(); setTimeout(() => fsDigestDialog(code), 30); }; }
   }
@@ -732,10 +732,12 @@ function fsPangeaCheck(form, code) {
     }
   }
   const note = $('#fsPangeaNote', form), box = $('#fsPangea', form);
+  // Pangea summaries that are already saved in the course's Drive folder would be read twice.
+  const inDrive = !!courseByCode(code)?.drive && (CDrive.entry(code)?.files || []).some(f => /פנגי|pangea/i.test(`${f.cat} ${f.name}`));
   Pangea.load().then(() => {
     const pg = Pangea.course(code);
-    note.textContent = pg ? `${pg.pages.length} דפים נמצאו` : 'אין סיכומים לקורס הזה';
-    box.disabled = !pg; box.checked = !!pg && !useDg;
+    note.textContent = pg ? `${pg.pages.length} דפים נמצאו${inDrive ? ' · כבר שמורים בתיקיית הדרייב, אז לא מסומן' : ''}` : 'אין סיכומים לקורס הזה';
+    box.disabled = !pg; box.checked = !!pg && !useDg && !inDrive;
   }).catch(() => { note.textContent = 'לא זמין כרגע'; });
 }
 const fsReadSources = fd => { const files = {}; for (const [k] of [...FS_SOURCES, ['inspire']]) files[k] = fd.getAll('src_' + k).filter(f => f && f.size); return files; };
@@ -1058,6 +1060,25 @@ Include, in the course's order of topics:
 5. A notation table: symbols, conventions, units.
 Hebrew prose, math in LaTeX. No introduction and no study advice. As long as the material needs, up to about 15,000 tokens.`;
 
+// The materials in parts of about 25K tokens (or 30 scanned pages), in source-priority order.
+function fsDigestChunks(items) {
+  const chunks = [];
+  let cur = null;
+  const flush = () => { if (cur && (cur.text || cur.docs.length)) chunks.push(cur); cur = null; };
+  for (const it of items) {
+    if (!it.text && !it.doc) continue;
+    const size = it.text.length + (it.doc ? it.doc.pages * 3000 : 0);
+    if (cur && (cur.size + size > 75000 || cur.pages + (it.doc?.pages || 0) > 30)) flush();
+    cur = cur || { text: '', docs: [], names: [], size: 0, pages: 0 };
+    if (it.doc) { cur.docs.push(it.doc.doc); cur.pages += it.doc.pages; cur.text += `\n--- ${it.name}: scanned, attached as a document (source kind: ${it.kind}) ---\n`; }
+    else cur.text += `\n<source kind="${it.kind}" label="${esc(it.label)}" file="${esc(it.name)}">\n${it.text}\n</source>\n`;
+    cur.names.push(it.name); cur.size += size;
+  }
+  flush();
+  chunks.forEach(ch => { ch.weight = ch.size; });
+  return chunks;
+}
+
 async function fsMakeDigest(code, files, usePangea, useDrive) {
   if (fsDigestRun[code]) return toast('התקציר של הקורס הזה כבר בהכנה…');
   const c = courseByCode(code);
@@ -1070,9 +1091,34 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
   try {
     const src = await fsReadMaterials({ course: code }, files, usePangea, useDrive, say, '');
     if (!src.count) throw new Error('לא נבחרו חומרים (או שאף קובץ לא נקרא), ואין ממה להכין תקציר.');
-    say(`Claude מזקק ${src.count} מקורות${src.docs.length ? ` (${src.docs.length} סרוקים)` : ''}. כמה דקות, רץ ברקע…`, 'הזיקוק ב-Claude');
-    const text = (await fsAiText([...src.docs, { type: 'text', text: `${fsDigestTask(c)}\n\nSOURCES:\n${src.text}` }], { maxTokens: 120000, effort: 'high', onUsage: u => fsAddUsage(used, u) })).trim();
+    // One long answer from Claude took 10+ minutes (it writes at a fixed speed). So the materials are
+    // split into parts that are digested at the same time, and the parts are joined in order.
+    const chunks = fsDigestChunks(src.items);
+    const total = chunks.reduce((s, ch) => s + ch.weight, 0) || 1;
+    const outs = new Array(chunks.length), failed = [];
+    let ready = 0;
+    const progress = () => say(`Claude מזקק ${src.count} מקורות ב-${chunks.length} חלקים במקביל · ${ready}/${chunks.length} מוכנים`, 'הזיקוק ב-Claude');
+    progress();
+    const queue = chunks.map((ch, i) => i);
+    await Promise.all(Array.from({ length: Math.min(6, chunks.length) }, async () => {
+      for (let i; (i = queue.shift()) !== undefined;) {
+        const ch = chunks[i], room = Math.max(1500, Math.round(15000 * ch.weight / total));
+        for (let attempt = 1; ; attempt++) {
+          try {
+            outs[i] = (await fsAiText([...ch.docs, { type: 'text', text: `${fsDigestTask(c)}\n\nTHIS REQUEST: you see only PART ${i + 1} of ${chunks.length} of the materials (${ch.names.join(', ')}). Digest ONLY what is in this part, under the same headings; the parts are joined in order afterwards, so no introduction and no summary. Length: up to about ${room} tokens.\n\nSOURCES:\n${ch.text}` }], { maxTokens: 32000, effort: 'medium', onUsage: u => fsAddUsage(used, u) })).trim();
+            break;
+          } catch (e) {
+            if (attempt >= 2 || e?.status === 401 || e?.status === 403 || /credit balance/i.test(String(e?.message))) { failed.push({ i, e }); break; }
+            await new Promise(r => setTimeout(r, e?.status === 429 || e?.status === 529 ? 30000 : 3000));
+          }
+        }
+        ready++; progress();
+      }
+    }));
+    if (failed.length > chunks.length / 2) throw failed[0].e;
+    const text = outs.map((t, i) => (t ? `<!-- חלק ${i + 1}: ${chunks[i].names.join(', ')} -->\n${t}` : '')).filter(Boolean).join('\n\n');
     if (text.length < 500) throw new Error('התקציר שחזר קצר מדי. נסה שוב.');
+    if (failed.length) src.left.push(...failed.flatMap(f => chunks[f.i].names));
     Store.put('digest', code, { text, at: Date.now(), n: src.count, ai: used });
     toast(`📚 התקציר של ${c?.name || code} מוכן · ${fsUsageText(used).split(' (')[0]}${src.left.length ? ` · לא נקראו: ${src.left.join(', ')}` : ''} · עכשיו אפשר ליצור ממנו נוסחאון`);
   } catch (e) {
@@ -1089,6 +1135,9 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
 function fsDigestRefresh(code) {
   const sel = $('#modal[open] #fsDigestState') && $('#modal #fsCourse');
   if (sel && sel.value === code) sel.dispatchEvent(new Event('change'));
+  // The "new sheet" / "create" dialogs show the digest row: keep its line current too.
+  const note = $('#modal[open] #fsDigestNote');
+  if (note && fsDigestRun[code] && ($('#modal #fsCourse')?.value || fsSheet()?.course) === code) note.textContent = `בהכנה: ${fsDigestRun[code]}`;
 }
 
 function fsDigestDialog(code0) {
@@ -1189,8 +1238,10 @@ async function fsReadMaterials(sheet, files, usePangea, useDrive, say, digest) {
   const docs = [], skipped = [];
   let docPages = 0, docBytes = 0;
   const budget = { exams: 120000, material: 80000, summaries: 60000, slides: 60000, tutorials: 40000, hw: 30000, inspire: 30000, pangea: 60000 };
+  const items = []; // the same material file by file (the digest splits it into parts that run in parallel)
   for (const [k, l] of [...FS_SOURCES, ['inspire', 'existing formula sheet (style/inspiration only)']]) {
-    let text = '';
+    let text = '', room = budget[k];
+    const item = (name, t, doc) => { const s = String(t || '').slice(0, Math.max(0, room)); room -= s.length; items.push({ kind: k, label: l, name, text: s, doc }); };
     for (const f of (files || {})[k] || []) {
       say(`📖 קורא ${esc(f.name)}…`);
       try {
@@ -1202,28 +1253,38 @@ async function fsReadMaterials(sheet, files, usePangea, useDrive, say, digest) {
               docPages += pages; docBytes += f.size;
               docs.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: await fsBase64(f) }, title: f.name, context: `source kind: ${k} (${l})` });
               text += `\n--- ${f.name}: scanned, attached as a document ---\n`;
+              item(f.name, '', { doc: docs[docs.length - 1], pages });
             } else skipped.push(f.name);
             continue;
           }
           text += `\n--- ${f.name} ---\n${t}`;
-        } else text += `\n--- ${f.name} ---\n` + (/\.json$/i.test(f.name) ? await f.text() : await fileToText(f));
+          item(f.name, t);
+        } else {
+          const t = /\.json$/i.test(f.name) ? await f.text() : await fileToText(f);
+          text += `\n--- ${f.name} ---\n` + t;
+          item(f.name, t);
+        }
       } catch (e) { console.warn('formula sheet: could not read', f.name, e); skipped.push(f.name); }
     }
     if (text.trim()) parts.push(`<source kind="${k}" label="${esc(l)}">\n${text.slice(0, budget[k])}\n</source>`);
   }
   if (usePangea) {
     const pg = Pangea.course(sheet.course);
-    let text = '';
-    for (const [i, p] of (pg?.pages || []).entries()) {
-      say(`💧 קורא את פנגייה ${i + 1}/${pg.pages.length}…`);
-      try { text += `\n--- ${p.title} ---\n` + await Pangea.pageText(p.url); } catch {}
-    }
+    let text = '', n = 0, room = budget.pangea;
+    // All pages at once, kept in their order.
+    const pages = await Promise.all((pg?.pages || []).map(p => Pangea.pageText(p.url).then(t => { say(`💧 קורא את פנגייה ${++n}/${pg.pages.length}…`); return t; }, () => '')));
+    pages.forEach((t, i) => {
+      if (!t) return;
+      text += `\n--- ${pg.pages[i].title} ---\n` + t;
+      const s = t.slice(0, Math.max(0, room)); room -= s.length;
+      if (s) items.push({ kind: 'summaries', label: 'Pangea student summaries', name: pg.pages[i].title, text: s });
+    });
     if (text.trim()) parts.push(`<source kind="summaries" label="Pangea student summaries">\n${text.slice(0, budget.pangea)}\n</source>`);
   }
   const left = [...skipped, ...driveFailed];
   const count = parts.length ? Object.values(files || {}).reduce((s, a) => s + a.length, 0) - skipped.length + (usePangea ? Pangea.course(sheet.course)?.pages.length || 0 : 0) : 0;
   if (digest) parts.unshift(`<course_digest note="prepared earlier from the full course materials; treat it as the main source">\n${digest}\n</course_digest>`);
-  return { docs, text: parts.join('\n\n') || '(no files: use your knowledge of the standard Technion syllabus for this course)', left, count };
+  return { docs, items, text: parts.join('\n\n') || '(no files: use your knowledge of the standard Technion syllabus for this course)', left, count };
 }
 
 async function fsGenerate(id, files, usePangea, useDrive, useDigest) {
