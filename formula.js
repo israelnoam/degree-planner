@@ -319,6 +319,7 @@ function renderSheetEditor(root, sheet) {
             <div class="fs-box-h"><b>🧭 אופי הקורס</b><button class="btn small" type="button" id="fsProfile">שנה</button></div>
             <div class="chips">${(sheet.profile || []).map(p => `<span class="chip">${FS_PROFILES[p] || esc(p)}</span>`).join('') || '<span class="muted">לא הוגדר</span>'}</div>
             ${sheet.brief?.emphasis ? `<p class="muted small">🎯 ${esc(sheet.brief.emphasis)}</p>` : ''}
+            ${sheet.advice ? `<p class="small">💡 <b>המלצת מבנה:</b> ${esc(sheet.advice)}</p>` : ''}
             ${sheet.ai ? `<p class="muted small" title="הערכה לפי מחירון ה-API; החיוב בפועל מופיע בחשבון Anthropic שלך">🧾 עלות היצירה: ${fsUsageText(sheet.ai)}</p>` : ''}
           </div>
           <div class="fs-box">
@@ -713,9 +714,9 @@ function fsDrivePickDraw(form, code, onChange) {
   for (const f of files) (groups[fsDriveKind(f)] = groups[fsDriveKind(f)] || []).push(f);
   const order = [...FS_SOURCES.map(([k]) => k), 'inspire'];
   const size = n => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1e3)) + 'KB');
-  box.innerHTML = `<div class="row wrap fs-pick-tools"><button type="button" class="btn small" data-pickall="1">סמן הכל</button><button type="button" class="btn small" data-pickall="0">נקה הכל</button><button type="button" class="btn small" data-pickall="d">ברירת מחדל</button><small class="muted">הבחירה נשמרת לקורס הזה. פחות קבצים = מהיר וזול יותר.</small></div>`
+  box.innerHTML = `<p class="muted small fs-pick-hint">💡 <b>מומלץ לסנן:</b> סריקות בכתב יד של הרצאות ותרגולים כשיש לאותו חומר קובץ מוקלד (סריקה נשלחת כתמונות: איטית ויקרה פי כמה, מסומנת 🖼️); קבצים כפולים (אותה הרצאה פעמיים, או פנגייה גם בדרייב וגם בתיבת פנגייה); פתרונות מלאים של שיעורי בית; גרסאות ישנות. <b>להשאיר:</b> דפי נוסחאות רשמיים, מבחנים קודמים, רשימות הרצאה מוקלדות וסיכום אחד טוב.</p><div class="row wrap fs-pick-tools"><button type="button" class="btn small" data-pickall="1">סמן הכל</button><button type="button" class="btn small" data-pickall="0">נקה הכל</button><button type="button" class="btn small" data-pickall="d">ברירת מחדל</button><small class="muted">הבחירה נשמרת לקורס הזה. פחות קבצים = מהיר וזול יותר.</small></div>`
     + order.filter(k => groups[k]).map(k => `<fieldset class="fs-pick-grp"><legend><label><input type="checkbox" data-pickgrp="${k}"> ${FS_KIND_NAMES[k]} <small class="muted">(${groups[k].length})</small></label></legend>
-      ${groups[k].map(f => `<label class="fs-pick-row"><input type="checkbox" data-pickid="${esc(f.id)}" ${sent.has(f.id) ? 'checked' : ''}><span>${esc(f.name)}</span><small class="muted">${esc(f.cat || '')} · ${size(f.size)}</small></label>`).join('')}</fieldset>`).join('');
+      ${groups[k].map(f => `<label class="fs-pick-row"><input type="checkbox" data-pickid="${esc(f.id)}" ${sent.has(f.id) ? 'checked' : ''}><span>${esc(f.name)}</span><small class="muted">${esc(f.cat || '')} · ${size(f.size)}${/\.pdf$/i.test(f.name) && f.size > 900e3 && /slides|tutorials|hw/.test(k) ? ' 🖼️' : ''}</small></label>`).join('')}</fieldset>`).join('');
   const sync = () => {
     $$('[data-pickgrp]', box).forEach(g => { const rows = $$(`[data-pickid]`, g.closest('fieldset')); const on = rows.filter(r => r.checked).length; g.checked = on === rows.length; g.indeterminate = on > 0 && on < rows.length; });
   };
@@ -832,6 +833,7 @@ function fsNewSheet(courseCode) {
     <label class="field"><span class="field-label">🎯 על מה לשים דגש? (נושאים, סוגי שאלות, מה המרצה אוהב)</span><textarea name="emphasis" rows="2" placeholder="למשל: עבודה וירטואלית ומסבכים מופיעים בכל מבחן; חשוב לי סד״פ לכל סוג שאלה"></textarea></label>
     <label class="field"><span class="field-label">🚫 מה לא צריך? (מה כבר בראש, מה לא במבחן)</span><textarea name="skip" rows="2" placeholder="למשל: בלי טריגונומטריה בסיסית; פרק 9 לא למבחן"></textarea></label>
     <label class="field"><span class="field-label">📌 כללי המבחן ודברים נוספים</span><textarea name="rules" rows="2" placeholder="למשל: דף דו-צדדי, מודפס בצבע; מותר מחשבון"></textarea></label>
+    <label class="field"><span class="field-label">🧩 שינויים בתבנית (לא חובה). כל נושא בנוי כך: זיהוי ← סד״פ ← נוסחאות מפתח ← דוגמת בזק אחת ← קיר הבושה</span><textarea name="template" rows="2" placeholder="למשל: בלי דוגמת בזק בנושאי תיאוריה; טבלת סימנים בתחילת הנוסחאון"></textarea></label>
     <div class="field"><span class="field-label">📂 חומרים (לפי סדר העדיפות). קבצי PDF נקראים במכשיר בלבד.</span>
       ${fsSourcesHtml()}
     </div>
@@ -842,7 +844,7 @@ function fsNewSheet(courseCode) {
     </div>`, (action, fd) => {
     const code = fd.get('course');
     const c = courseByCode(code);
-    const brief = { emphasis: String(fd.get('emphasis') || '').trim(), skip: String(fd.get('skip') || '').trim(), rules: String(fd.get('rules') || '').trim() };
+    const brief = { emphasis: String(fd.get('emphasis') || '').trim(), skip: String(fd.get('skip') || '').trim(), rules: String(fd.get('rules') || '').trim(), template: String(fd.get('template') || '').trim() };
     const sheet = {
       title: `נוסחאון ${c?.name || ''}`.trim(), course: code, pages: Math.max(1, +fd.get('pages') || 2), cols: +fd.get('cols') || 3,
       theme: 'standard', autofit: true, profile: fd.getAll('p'), brief, sections: [], coverage: [],
@@ -876,14 +878,18 @@ function fsNewSheet(courseCode) {
 // ---------- AI ----------
 const FS_STYLE_GUIDE = `STYLE (the student's own standard theme, learned from their sheets):
 - Hebrew prose, right-to-left. Math ONLY in LaTeX (KaTeX subset). Only symbols/variables/units are English or Greek.
-- One section per topic, titled briefly (e.g. "מאמץ, עיבור וקשרי הזזה"). Inside a section, use sub-headings (t:"h") for sub-topics.
-- Definitions and named formulas as "kv" rows: bold Hebrew label + formula (e.g. label "חוק הוק", tex "\\sigma = E\\cdot\\epsilon").
-- Important/general formulas as centered "eq".
-- For every type of exam question: a "steps" block titled "סדר פעולות (סד״פ):" with items like "**נרמול וזיהוי:** ...".
-- Short worked chain as "example" labelled "דוגמת בזק" using \\Rightarrow.
-- Traps students fall into: "callout" variant "trap" (titled "קיר הבושה - מלכודות קריטיות:"). Key emphasis: variant "tip" (title "דגש: ...").
-- Tables for comparisons/cases (beam load cases, integral tables, Laplace pairs…). A "symbols" table when a topic has many variables.
-- Profile "procedures": a "steps" block per exam question type (what to do, in order), and how to recognise the problem type and choose the method (a table "סימן זיהוי | שיטה"). No programming syntax here.
+THE FIXED TEMPLATE (taken from the student's own sheets). The sheet is a technical manual: a student who meets a question finds its section, sees how to recognise it, and follows the steps. Nothing to interpret, no theory to read through.
+- One section = ONE exam problem type, titled with its name (e.g. "משוואות ברנולי", "בעיית קושי: שיטת האופיינים", "גלים על חצי ישר: שיקופים"). Many short sections, never a few big ones. No sub-headings ("h") inside a section.
+- A "method" section, always in this order:
+  1. "kv" with label "זיהוי": the standard form in "tex", and in "note" the few words that tell this type apart.
+  2. "steps" titled "סדר פעולות (סד״פ):": 3-6 items "**שם השלב:** the action", each one concrete thing to do, in order, with the formula that step uses written inside it. Imperative, technical; say what to do next, not why.
+  3. At most two key formulas the steps rely on ("eq" or "kv"), or one small table only when the cases ARE the method (e.g. eigenvalues by boundary condition).
+  4. Exactly ONE "example" labelled "דוגמת בזק": a single chain with \\Rightarrow from the given problem to the answer's form.
+  5. One "callout" variant "trap" titled "קיר הבושה - מלכודות קריטיות:" with 2-4 items "**שם המלכודת:** …".
+- A "theory" section (a theorem / condition used in questions): "kv" rows with labels "התנאי" and "המסקנה" (or "התכלס"), then "steps" "סד״פ:" for how a question uses it, then the trap callout. No example needed.
+- A "reference" section (identities, transform pairs, partial fractions, integrals): "table" / "kv" only. Reference sections go at the end.
+- At most one "callout" variant "tip" ("דגש: …") per section, only for a must-know distinction. No prose paragraphs, no history, no motivation.
+- Definitions and named formulas as "kv" rows: bold Hebrew label + formula (e.g. label "חוק הוק", tex "\\sigma = E\\cdot\\epsilon"). Important formulas as centered "eq".
 - Profile "code": real code snippets and syntax in "code" blocks (monospace, left-to-right), short and exam-relevant. Never put code in a sheet whose profile lacks "code".
 - Dense, exam-ready, no fluff. Vectors underlined (\\underline{r}) when the course does so.
 FIGURES (only when the course profile includes "figures"): draw your own clean SVG (viewBox, ~240x150), white background, black 1.2px lines, blue #1d4ed8 for geometry/vectors, red #dc2626 for forces/loads, labels as <text> with font-family="KaTeX_Math, serif" font-style="italic". Model them on the diagrams in the course material (free-body diagrams, beams, supports, Mohr's circle, cross-sections). No figures for courses without "figures".`;
@@ -929,6 +935,7 @@ function fsBriefTask(sheet) {
 - Emphasise: ${sheet.brief?.emphasis || '-'}
 - Leave out: ${sheet.brief?.skip || '-'}
 - Exam rules / notes: ${sheet.brief?.rules || '-'}
+- Changes to THE FIXED TEMPLATE the student asked for: ${sheet.brief?.template || '- (use it as is)'}
 - Source priority: past exams > course material (syllabus, official sheets) > the student's summaries > lecture slides > tutorials > homework. An attached existing formula sheet is for style and inspiration.
 
 Block types (field "t"): ${Object.entries(FS_BLOCKS).map(([t, [l, f]]) => `${t} (${l}: ${f.map(x => x[0]).join(', ')})`).join('; ')}.
@@ -1228,6 +1235,28 @@ function fsDigestDialog(code0) {
   fsWide();
 }
 
+// ---------- the fixed template ----------
+// Puts a section's blocks in the template's order (זיהוי → סד״פ → key formulas → one example → traps),
+// drops sub-headings and keeps a single "דוגמת בזק". Reference sections are left as written.
+function fsShape(blocks, kind = 'method') {
+  if (kind === 'reference') return blocks;
+  const rank = b => (b.t === 'kv' && /זיהוי/.test(b.label || '') ? 0 : b.t === 'kv' && /תנאי/.test(b.label || '') ? 0.5 : b.t === 'kv' && /מסקנה|התכלס/.test(b.label || '') ? 0.6
+    : b.t === 'steps' ? 1 : b.t === 'callout' && b.variant === 'trap' ? 5 : b.t === 'example' ? 4 : b.t === 'callout' ? 3 : 2);
+  let ex = 0;
+  return blocks.filter(b => b.t !== 'h' && (b.t !== 'example' || !ex++)).map((b, i) => [b, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+}
+// Which blocks give way first when the sheet is too long: 1 = extras (paragraphs, lists, tips),
+// 2 = key formulas beyond the first two, 3 = tables in method sections. The template's core
+// (זיהוי, סד״פ, the example, the traps) is never hidden.
+function fsKeepRank(b, kind, k, all) {
+  if (kind === 'reference') return 9;
+  if (b.t === 'steps' || b.t === 'example' || (b.t === 'callout' && b.variant === 'trap') || (b.t === 'kv' && /זיהוי|תנאי|מסקנה|התכלס/.test(b.label || ''))) return 9;
+  if (b.t === 'text' || b.t === 'list' || b.t === 'callout') return 1;
+  if (b.t === 'eq' || b.t === 'kv') return all.slice(0, k).filter(x => x.t === 'eq' || (x.t === 'kv' && !/זיהוי|תנאי|מסקנה|התכלס/.test(x.label || ''))).length >= 2 ? 2 : 9;
+  if (b.t === 'table' || b.t === 'symbols') return kind === 'method' ? 3 : 9;
+  return 9;
+}
+
 // ---------- full generation: plan → every section at once → check → fit ----------
 // One request for a whole sheet is slow and gets cut off at the answer-length limit. So: a short
 // plan first, then every section in its own request, all running at the same time, then one check
@@ -1240,8 +1269,9 @@ const FS_OUTLINE_SCHEMA = {
   properties: {
     title: { type: 'string' },
     profile: { type: 'array', items: { type: 'string', enum: Object.keys(FS_PROFILES) } },
-    sections: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['title', 'brief', 'lines'], properties: { title: { type: 'string' }, brief: { type: 'string' }, lines: { type: 'integer' } } } },
+    sections: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['title', 'kind', 'brief', 'lines'], properties: { title: { type: 'string' }, kind: { type: 'string', enum: ['method', 'theory', 'reference'] }, brief: { type: 'string' }, lines: { type: 'integer' } } } },
     coverage: FS_SHEET_SCHEMA.properties.coverage,
+    advice: { type: 'string' },
   },
 };
 const FS_FIXES_SCHEMA = {
@@ -1373,7 +1403,8 @@ async function fsGenerate(id, files, usePangea, useDrive, useDigest) {
       const out = await call(step(`STEP 1: PLAN the sheet. Do not write any blocks yet.
 Return:
 - "title" and "profile".
-- "sections", in the order they appear on the sheet (about ${Math.max(5, Math.round(budget / 45))} of them). For each: "title"; "brief": exactly what goes into it (sub-topics, the named formulas and theorems, which סד״פ / tables / traps / examples), precise enough that a writer who sees only this plan and the sources writes it with no overlap with the other sections and nothing forgotten; "lines": its share of the space in short lines (the shares add up to about ${budget}). Give the most room to what the exams and the student's emphasis need.
+- "sections": the exam problem types of the course, one section each, in the course's order, following THE FIXED TEMPLATE (about ${Math.max(6, Math.round(budget / 32))} of them; reference sections last). For each: "title" (the problem type's name); "kind" ("method", "theory" or "reference"); "brief": what the writer puts in each part of the template (how to recognise it, the steps, the key formulas, the idea of the one example, the traps), precise enough that a writer who sees only this plan and the sources writes it with no overlap with the other sections; "lines": its share of the space in short lines (the shares add up to about ${budget}). The most room goes to what the exams and the student's emphasis need.
+- "advice": empty, unless the course needs something other than the template (e.g. a theory section that every method depends on should come first, or a topic with no method at all). Then one or two short Hebrew sentences of recommendation to the student.
 - "coverage": every syllabus topic with status in / partial / missing and a short note.`), FS_OUTLINE_SCHEMA, 48000);
       out.sections = (out.sections || []).filter(s => s?.title);
       if (!out.sections.length) throw new Error('ה-AI לא החזיר תכנון פרקים. נסה שוב.');
@@ -1395,11 +1426,11 @@ Return:
         try {
           const out = await call(step(`STEP 2: WRITE ONE SECTION of the sheet.
 The plan of the whole sheet: ${planText}
-Write ONLY section ${i + 1}: "${s.title}". Its content: ${s.brief}
+Write ONLY section ${i + 1}: "${s.title}", a "${s.kind || 'method'}" section of THE FIXED TEMPLATE, in the template's order. Its content: ${s.brief}
 Room: about ${s.lines} short lines (a "kv" row ≈ 1, a centered "eq" ≈ 2, a table row ≈ 1.3, a step or list item ≈ 1-2). Fill it; do not go more than 10% over. Do not repeat what the plan gives to other sections.
 Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SCHEMA, 48000, 'medium', onStart);
           if (!out.blocks?.length) throw new Error('פרק ריק');
-          work.sections[i] = { title: s.title, blocks: out.blocks };
+          work.sections[i] = { title: s.title, kind: s.kind || 'method', blocks: fsShape(out.blocks, s.kind) };
           progress();
           return;
         } catch (e) {
@@ -1430,34 +1461,26 @@ Return {"blocks":[...]} (the section title is added by the app).`), FS_BLOCKS_SC
       const numbered = sections.map((s, si) => ({ section: si, title: s.title, blocks: s.blocks.map((b, bi) => ({ block: bi, ...b })) }));
       const out = await call(step(`STEP 3: CHECK the written sheet against the sources.
 The sheet: ${JSON.stringify(numbered)}
-Check every formula, sign, condition and theorem statement (the official formula pages and the lecture notes decide), that the notation is the course's, that the LaTeX is valid KaTeX, and that nothing is said twice in different sections.
+Check every formula, sign, condition and theorem statement (the official formula pages and the lecture notes decide), that the notation is the course's, that the LaTeX is valid KaTeX, that every "method" section has its "זיהוי", its סד״פ, ONE "דוגמת בזק" and its trap callout (and no sub-headings), and that nothing is said twice in different sections.
 Return {"fixes":[...]} with ONLY the blocks that must change: "section" and "block" are the numbers above; "action" is "replace" (with the corrected block in "data") or "delete" (a duplicate; "data" is ignored); "why" in a few words. An empty list if everything is right.`), FS_FIXES_SCHEMA, 48000);
       const fixes = (out.fixes || []).filter(f => sections[f.section]?.blocks[f.block]);
       for (const f of fixes.filter(f => f.action === 'replace' && f.data)) { const b = fsCleanBlock(f.data); if (b.t) { sections[f.section].blocks = sections[f.section].blocks.map((x, k) => (k === f.block ? b : x)); fixed++; } }
       for (const f of fixes.filter(f => f.action === 'delete').sort((a, b) => b.block - a.block)) { sections[f.section].blocks = sections[f.section].blocks.filter((x, k) => k !== f.block); fixed++; }
-      sections = sections.filter(s => s.blocks.length);
+      sections = sections.filter(s => s.blocks.length).map(s => ({ ...s, blocks: fsShape(s.blocks, s.kind) }));
     } catch (e) {
       if (e?.cancelled || ac.signal.aborted) throw e;
       console.warn('formula sheet: check step failed', e);
       checked = false;
     }
 
-    // 4. Does it fit? Measured with the real layout; if not, every section is shortened (again all at once).
+    // 4. Does it fit? Measured with the real layout. If not, the least important blocks are hidden
+    // here, without another AI round (they stay in the sheet: 👁️ shows them again).
+    let hid = 0;
     try {
       say('📏 שלב 4/4: מודד התאמה לעמודים', 'התאמה לעמודים');
-      const info = await fsLayout({ ...sheet, sections, autofit: true }, document.createElement('div'));
-      const over = info && (info.pages > info.target ? 0.75 : info.scale < 0.82 ? 0.88 : 0);
-      if (over) {
-        say(`✂️ שלב 4/4: מקצר כדי להיכנס ל-${info.target} עמודים`);
-        sections = await Promise.all(sections.map(async s => {
-          try {
-            const out = await call(`Formula sheet "${plan.title}" (${courseLabel(sheet.course)}). The whole sheet is too long for its ${info.target} page(s).
-Shorten this section to about ${Math.round(over * 100)}% of its length: keep what an exam needs most (the סד״פ, the key formulas, the traps), drop derivations and what is obvious, merge rows. Same block types and style.
-The section: ${JSON.stringify(s)}
-Return {"blocks":[...]}.`, FS_BLOCKS_SCHEMA, 48000, 'medium');
-            return out.blocks?.length ? { ...s, blocks: out.blocks } : s;
-          } catch (e) { if (e?.cancelled) throw e; return s; }
-        }));
+      const fits = async () => { const info = await fsLayout({ ...sheet, sections, autofit: true }, document.createElement('div')); return !info || (info.pages <= info.target && info.scale >= 0.8); };
+      for (let level = 1; level <= 3 && !(await fits()); level++) {
+        sections = sections.map(s => ({ ...s, blocks: s.blocks.map((b, k) => { if (b.hidden || fsKeepRank(b, s.kind, k, s.blocks) > level) return b; hid++; return { ...b, hidden: true }; }) }));
       }
     } catch (e) {
       if (e?.cancelled || ac.signal.aborted) throw e;
@@ -1468,8 +1491,8 @@ Return {"blocks":[...]}.`, FS_BLOCKS_SCHEMA, 48000, 'medium');
     const left = work.src.left;
     delete fsGen[id];
     if (currentView === 'formula' && !fsOpenId) setTimeout(render, 0);
-    Store.put('sheet', id, { title: plan.title || sheet.title, profile: plan.profile?.length ? plan.profile : sheet.profile, sections: sections.map(s => ({ id: fsId(), ...s })), coverage: plan.coverage || [], ai: { ...used, at: Date.now() } });
-    toast(`✨ הנוסחאון מוכן (${fsClock(Date.now() - t0)}) · ${fsUsageText(used).split(' (')[0]}${checked ? (fixed ? ` · ${fixed} תיקונים בבדיקה` : ' · נבדק מול המקורות') : ' · שלב הבדיקה נכשל, כדאי לבקש "בדוק שהנוסחאות נכונות" בעזרה מ-AI'}${left.length ? ` · לא נקראו: ${left.join(', ')}` : ''}`);
+    Store.put('sheet', id, { title: plan.title || sheet.title, profile: plan.profile?.length ? plan.profile : sheet.profile, sections: sections.map(s => ({ id: fsId(), ...s })), coverage: plan.coverage || [], advice: plan.advice || '', ai: { ...used, at: Date.now() } });
+    toast(`✨ הנוסחאון מוכן (${fsClock(Date.now() - t0)}) · ${fsUsageText(used).split(' (')[0]}${hid ? ` · ${hid} בלוקים הוסתרו כדי להיכנס לעמודים` : ''}${checked ? (fixed ? ` · ${fixed} תיקונים בבדיקה` : ' · נבדק מול המקורות') : ' · שלב הבדיקה נכשל, כדאי לבקש "בדוק שהנוסחאות נכונות" בעזרה מ-AI'}${left.length ? ` · לא נקראו: ${left.join(', ')}` : ''}`);
   } catch (e) {
     console.error(e);
     const partial = e?.fsPartial || (work.outline && !e?.cancelled ? 'מה שכבר נוצר נשמר; "נסה שוב" ימשיך מאותה נקודה.' : '');

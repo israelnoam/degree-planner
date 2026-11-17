@@ -205,3 +205,7 @@ dialog.wide { width: min(980px, 96vw); max-width: 96vw; }
 .fs-pick-row small { white-space: nowrap; }
 .fs-pick-grp legend label { display: inline-flex; flex-direction: row; gap: 6px; align-items: center; margin: 0; }
 .fs-pick-grp input[type=checkbox], .fs-pick-row input[type=checkbox] { width: 16px; height: 16px; margin: 0; }
+/* Topics apart: room above every section title except at the top of a column */
+.fs-theme-standard .fs-sec { margin-top: .9em; }
+.fs-col > .fs-unit:first-child .fs-sec { margin-top: 0; }
+.fs-pick-hint { margin: 6px 0 4px; line-height: 1.5; }
