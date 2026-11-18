@@ -211,7 +211,11 @@ function bindConnectCard(root) {
 function googleBar(kind) {
   const name = kind === 'tasks' ? 'Google Tasks' : 'Google Calendar';
   const icon = kind === 'tasks' ? '✅' : '📅';
-  const open = `<a class="btn" href="${kind === 'tasks' ? GTASKS_URL : GCAL_URL}" target="_blank" rel="noopener" title="פתח את ${name}">↗ פתח</a>`;
+  // The product's own icon from Google; 📅 / ✅ when it can't load (offline).
+  const logoUrl = kind === 'tasks' ? 'https://www.gstatic.com/images/branding/product/2x/tasks_48dp.png'
+    : 'https://www.gstatic.com/images/branding/product/1x/calendar_2020q4_48dp.png';
+  const logo = `<img class="gicon" alt="" src="${logoUrl}" data-fallback="${icon}">`;
+  const open = `<a class="btn tip" href="${kind === 'tasks' ? GTASKS_URL : GCAL_URL}" target="_blank" rel="noopener" aria-label="פתח את ${name}">${logo}</a>`;
   if (!Sync.connected) {
     return `<div class="gbar"><span>${icon} ${name}: <b>לא מחובר</b></span><span class="row">${open}<button class="btn primary" data-gbar="connect">התחבר עם Google</button></span></div>`;
   }
@@ -224,9 +228,14 @@ function googleBar(kind) {
   const status = busy ? 'מסנכרן…' : !ok ? 'יש בעיה (פרטים למטה)'
     : when ? `מסונכרן · ${new Date(when).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' })}` : 'מתחבר…';
   return `<div class="gbar ${ok ? 'ok' : 'bad'}"><span>${icon} ${name}: <b>${status}</b></span>
-    <span class="row">${open}<button class="btn" data-gbar="sync" ${busy ? 'disabled' : ''}>🔄 ${kind === 'tasks' ? 'סנכרן' : 'רענן'}</button></span></div>`;
+    <span class="row">${open}<button class="btn tip" data-gbar="sync" ${busy ? 'disabled' : ''} aria-label="${kind === 'tasks' ? 'סנכרן' : 'רענן'}">🔄</button></span></div>`;
 }
 function bindGoogleBar(root) {
+  // The page's security policy blocks inline onerror, so the offline fallback is bound here.
+  $$('img.gicon', root).forEach(img => {
+    const fall = () => img.replaceWith(img.dataset.fallback);
+    if (img.complete && !img.naturalWidth) fall(); else img.addEventListener('error', fall);
+  });
   $$('[data-gbar]', root).forEach(b => b.onclick = () => {
     if (b.dataset.gbar === 'connect') return connectGoogle();
     b.disabled = true;
@@ -336,7 +345,7 @@ function renderMap(root) {
             ${['locked', 'open', 'active', 'done'].map(k => `<span class="lg ${k}"><i></i>${STATUS[k].label}</span>`).join('')}
           </div>
           <div class="row wrap">
-            <button class="btn" id="gradeSheetBtn">📄 ייבוא גיליון ציונים</button>
+            <button class="btn tip" id="gradeSheetBtn" aria-label="ייבוא גיליון ציונים">📄</button>
             <button class="btn primary" id="addCourse">＋ הוסף קורס</button>
           </div>
         </div>
@@ -882,8 +891,14 @@ function renderTimetable(root) {
     const used = new Set(items.map(i => i.col).concat(allDay.flatMap((a, i) => a.length ? [i] : [])));
     days = used.has(6) ? 7 : used.has(5) ? 6 : 5;
   }
-  const startMin = Math.min(8 * 60 + 30, ...items.map(i => Math.floor((i.s - 30) / 60) * 60 + 30));
-  const endMin = Math.max(21 * 60 + 30, ...items.map(i => i.e));
+  // Always 08:30–21:30; anything outside is cut at the edges (and dropped if it lies wholly outside).
+  const startMin = 8 * 60 + 30, endMin = 21 * 60 + 30;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.e <= startMin || it.s >= endMin) { items.splice(i, 1); continue; }
+    it.time = `${hhmm(it.s)}–${hhmm(it.e)}`; // the real times, even when the block is cut
+    it.s =Math.max(it.s, startMin); it.e = Math.min(it.e, endMin);
+  }
   const hours = [];
   for (let m = startMin; m < endMin; m += 60) hours.push(m);
   const total = hours.length * 60;
@@ -895,7 +910,7 @@ function renderTimetable(root) {
         `width:calc(${100 / it.lanes}% - 6px);inset-inline-start:calc(${(100 / it.lanes) * it.lane}% + 3px);`;
       const style = it.kind === 'slot' ? `--h:${it.hue}` : `--ev:${esc(it.color)}`;
       return `<button type="button" class="slot ${it.kind}" data-kind="${it.kind}" data-id="${esc(it.id)}" style="${pos}${style}">
-        <b>${esc(it.title)}</b><small>${esc(it.sub)} · <span dir="ltr">${hhmm(it.s)}–${hhmm(it.e)}</span></small>${it.place ? `<small>${esc(it.place)}</small>` : ''}
+        <b>${esc(it.title)}</b><small>${esc(it.sub)} · <span dir="ltr">${it.time}</span></small>${it.place ? `<small>${esc(it.place)}</small>` : ''}
       </button>`;
     }).join('');
     return `<div class="tt-col ${keys[di] === todayKey ? 'today' : ''}" data-day="${d.getDay()}">
@@ -928,11 +943,12 @@ function renderTimetable(root) {
           <button class="btn" id="wkNext" aria-label="${nextLabel}" title="${nextLabel}">←</button>
           <span class="muted">${rangeLabel}</span>
           </span>
+          ${GCal.googleReady() ? ttCatFilterHtml() : ''}
           <button class="btn primary" id="addSlot">＋ הוסף שיעור</button>
         </div>
       </div>
       ${calNote}
-      ${todays.length ? `<div class="today-strip"><b>היום:</b> ${todays.map(i => `<span class="chip"><span dir="ltr">${hhmm(i.s)}</span> ${esc(i.title)}</span>`).join('')}</div>` : ''}
+      ${todays.length ? `<div class="today-strip"><b>היום:</b> ${todays.map(i => `<span class="chip"><span dir="ltr">${i.time.slice(0, 5)}</span> ${esc(i.title)}</span>`).join('')}</div>` : ''}
       <div class="tt-scroll">
         <div class="tt" style="--days:${days};--colmin:${mode === 'week' ? 110 : 80}px">
           <div class="tt-times"><div class="tt-head"></div><div class="tt-allday" style="height:${allDayH}px"></div><div class="tt-body">${hours.map(m => `<div class="tt-hour"><span>${hhmm(m)}</span></div>`).join('')}</div></div>
@@ -952,6 +968,7 @@ function renderTimetable(root) {
   $('#wkToday').onclick = () => { ttWeek = startOfWeek(today); ttDay = today; render(); };
   $$('[data-ttmode]', root).forEach(b => b.onclick = () => { if (b.dataset.ttmode !== mode) setTtMode(b.dataset.ttmode); });
   $('#addSlot').onclick = () => editSlot(null);
+  bindTtCatFilter(root);
   bindGoogleBar(root);
   $$('[data-kind]', root).forEach(el => el.onclick = e => {
     e.stopPropagation();
@@ -980,6 +997,57 @@ function renderTimetable(root) {
 
   const shown = ttWeeksShown().map(ymd).join();
   ttFetch(() => { if (currentView === 'timetable' && ttWeeksShown().map(ymd).join() === shown) render(); });
+}
+
+// Color-category filter: an icon in the timetable toolbar; its list opens when you point at it
+// (or tap / tab to it). The categories are scanned the first time it opens.
+let ttCatOpen = false, ttCatScanning = false;
+function ttCatFilterHtml() {
+  const cats = GCal.categories;
+  const shown = settings().calCategories;
+  const multiCal = new Set((cats || []).map(c => c.calendar)).size > 1;
+  const hidden = cats && Array.isArray(shown) ? cats.filter(c => !shown.includes(c.key)).length : 0;
+  const list = cats ? (cats.length ? `<div class="cat-picks">${cats.map(c => `
+      <label class="cat-pick"><input type="checkbox" class="catPick" value="${esc(c.key)}" ${(Array.isArray(shown) ? shown.includes(c.key) : true) ? 'checked' : ''}>
+        <span class="ev-dot big" style="--ev:${esc(c.color)}"></span>
+        <span class="cat-info"><b>${c.count} אירועים${multiCal ? ` · ${esc(c.calendar)}` : ''}${c.study ? ' <span class="badge">📚 נראה כמו לימודים</span>' : ''}</b>
+        <small>${c.samples.map(esc).join(' · ')}</small></span>
+      </label>`).join('')}</div>
+      <button type="button" class="btn small" id="rescanCats">🔄 סרוק שוב</button>`
+      : '<p class="muted">אין אירועים ב-10 השבועות הקרובים ביומנים שנבחרו.</p>')
+    : `<p class="muted">${GCal.lastError ? 'לא הצלחתי לסרוק את היומן.' : 'סורק את היומן…'}</p>`;
+  return `<div class="hover-pop ${ttCatOpen ? 'open' : ''}" id="ttCats">
+      <button type="button" class="btn icon-btn ${hidden ? 'on' : ''}" aria-label="סינון קטגוריות (צבעים)" title="סינון קטגוריות (צבעים)" aria-haspopup="true">🎨${hidden ? `<i class="pop-count">${hidden}</i>` : ''}</button>
+      <div class="pop-panel" role="group" aria-label="קטגוריות לפי צבע">
+        <b>קטגוריות לפי צבע</b>
+        <p class="muted small">אפשר להציג רק חלק מהצבעים ביומן. בהתחלה הכול מוצג.</p>
+        ${list}
+      </div>
+    </div>`;
+}
+function bindTtCatFilter(root) {
+  const box = $('#ttCats', root);
+  if (!box) return;
+  const scan = () => {
+    if (GCal.categories || ttCatScanning || !GCal.googleReady()) return;
+    ttCatScanning = true;
+    GCal.scanCategories().catch(e => { GCal.lastError = e; })
+      .finally(() => { ttCatScanning = false; if (currentView === 'timetable') render(); });
+  };
+  box.addEventListener('mouseenter', scan);
+  box.addEventListener('focusin', scan);
+  box.addEventListener('mouseleave', () => { ttCatOpen = false; box.classList.remove('open'); });
+  // A tap on the icon (touch screens have no hover) opens and closes the list.
+  $('.icon-btn', box).onclick = () => { ttCatOpen = !box.classList.contains('open'); box.classList.toggle('open', ttCatOpen); scan(); };
+  $$('.catPick', box).forEach(cb => cb.onchange = () => {
+    // Keep the list open across the redraw that applies the filter.
+    ttCatOpen = true;
+    Store.put('meta', 'settings', { calCategories: $$('.catPick:checked', box).map(x => x.value) });
+    render();
+  });
+  $('#rescanCats', box)?.addEventListener('click', () => {
+    GCal.categories = null; GCal.weeks = {}; GCal.fetchedAt = {}; ttCatOpen = true; scan(); render();
+  });
 }
 
 function showEvent(ev) {
@@ -1126,9 +1194,6 @@ function googleSection(st) {
   }
   const cals = GCal.calendars;
   const chosen = Array.isArray(st.calendarIds) ? st.calendarIds : [];
-  const cats = GCal.categories;
-  const shown = st.calCategories;
-  const multiCal = chosen.length > 1;
   const lists = GTasks.lists;
   const listMap = lists ? GTasks.courseMap(lists) : {};
   const overrides = st.taskListMap || {};
@@ -1144,16 +1209,7 @@ function googleSection(st) {
         <label class="check"><input type="checkbox" class="calPick" value="${esc(c.id)}" ${chosen.includes(c.id) ? 'checked' : ''}>
         <span class="ev-dot" style="--ev:${esc(c.color)}"></span>${esc(c.summary)}${c.primary ? ' <small class="muted">(ראשי)</small>' : ''}</label>`).join('')}</div>`
         : `<p class="muted">טוען יומנים…</p>`}
-      <h3>קטגוריות לפי צבע</h3>
-      <p class="muted">אם אתה צובע אירועים לפי סוג (לימודים, אישי…), אפשר להציג רק חלק מהצבעים. בהתחלה הכול מוצג.</p>
-      ${cats ? (cats.length ? `<div class="cat-picks">${cats.map(c => `
-        <label class="cat-pick"><input type="checkbox" class="catPick" value="${esc(c.key)}" ${(Array.isArray(shown) ? shown.includes(c.key) : true) ? 'checked' : ''}>
-          <span class="ev-dot big" style="--ev:${esc(c.color)}"></span>
-          <span class="cat-info"><b>${c.count} אירועים${multiCal ? ` · ${esc(c.calendar)}` : ''}${c.study ? ' <span class="badge">📚 נראה כמו לימודים</span>' : ''}</b>
-          <small>${c.samples.map(esc).join(' · ')}</small></span>
-        </label>`).join('')}</div>` : '<p class="muted">אין אירועים ב-10 השבועות הקרובים ביומנים שנבחרו.</p>')
-        : (cals ? '<p class="muted">סורק את היומן…</p>' : '')}
-      ${cats ? '<button class="btn" id="rescanCats">🔄 סרוק שוב</button>' : ''}
+      <p class="muted">סינון לפי צבע (קטגוריות) נמצא עכשיו במערכת השעות, באייקון 🎨 למעלה.</p>
     </details>
 
     <details class="set-sub"><summary>✅ Google Tasks <small class="muted">· ${st.tasksSync !== false ? 'מסונכרן' : 'כבוי'}</small></summary>
@@ -1173,13 +1229,13 @@ function bindGoogleSection(root) {
   $('#grantMore', root)?.addEventListener('click', () => Sync.authorize());
 
   // Load calendars, color categories and task lists once per visit.
-  const needCal = Sync.hasScope('calendar') && (!GCal.calendars || !GCal.categories) && !GCal.lastError;
+  const needCal = Sync.hasScope('calendar') && !GCal.calendars && !GCal.lastError;
   const needLists = Sync.hasScope('tasks') && settings().tasksSync !== false && !GTasks.lists && !Sync.hookError;
   if (Sync.connected && Sync.token() && (needCal || needLists) && !googleSettingsLoading) {
     googleSettingsLoading = true;
     const rerender = () => { if (currentView === 'settings') render(); };
     const jobs = [];
-    if (needCal) jobs.push(GCal.listCalendars().then(() => GCal.selectedIds()).then(rerender).then(() => GCal.scanCategories()).catch(e => { GCal.lastError = e; }));
+    if (needCal) jobs.push(GCal.listCalendars().then(() => GCal.selectedIds()).catch(e => { GCal.lastError = e; }));
     if (needLists) jobs.push(GTasks.fetchLists().catch(e => { Sync.hookError = e; }));
     Promise.all(jobs).finally(() => { googleSettingsLoading = false; rerender(); });
   }
@@ -1191,10 +1247,6 @@ function bindGoogleSection(root) {
     GCal.categories = null; resetCalendar();
     render();
   });
-  $$('.catPick', root).forEach(cb => cb.onchange = () => {
-    Store.put('meta', 'settings', { calCategories: $$('.catPick:checked', root).map(x => x.value) });
-  });
-  $('#rescanCats', root)?.addEventListener('click', () => { GCal.categories = null; resetCalendar(); render(); });
   $$('.listPick', root).forEach(sel => sel.onchange = () => {
     Store.put('meta', 'settings', { taskListMap: { ...(settings().taskListMap || {}), [sel.dataset.list]: sel.value } });
     Sync.schedule(100);

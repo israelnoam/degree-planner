@@ -99,7 +99,7 @@ function renderTools(root) {
         <div><h2>🧰 כלים</h2><p class="muted">כל אתרי הטכניון במקום אחד, קישורים לכל קורס, והאפליקציות שלך.</p></div>
         <div class="row wrap">
           <input id="toolsSearch" type="search" placeholder="🔍 חיפוש אתר או קורס…" value="${esc(toolsQuery)}" style="width:220px">
-          <button class="btn" id="toolsAdd" type="button">＋ קישור משלי</button>
+          <button class="btn tip" id="toolsAdd" type="button" aria-label="קישור משלי">＋</button>
           ${hiddenCount ? `<button class="btn ${toolsShowHidden ? 'on' : ''}" id="toolsHidden" type="button">${toolsShowHidden ? 'הסתר מוסתרים' : `הצג מוסתרים (${hiddenCount})`}</button>` : ''}
         </div>
       </div>

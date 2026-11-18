@@ -648,13 +648,13 @@ function injectViewButtons() {
   $('#xSettings')?.classList.toggle('active', currentView === 'settings');
   const mapTb = $('.map-panel .toolbar .row');
   if (mapTb && !$('#xMapPng')) {
-    mapTb.insertAdjacentHTML('afterbegin', '<button class="btn" id="xMapPng" type="button">📸 תמונה</button><button class="btn" id="xMapCmp" type="button">⚖️ השוואה</button>');
+    mapTb.insertAdjacentHTML('afterbegin', '<button class="btn tip" id="xMapPng" type="button" aria-label="תמונה של המפה">📸</button><button class="btn tip" id="xMapCmp" type="button" aria-label="השוואת קורסים">⚖️</button>');
     $('#xMapPng').onclick = exportMapPng;
     $('#xMapCmp').onclick = () => openComparator();
   }
   const planTb = $('#view .panel > .toolbar');
   if (currentView === 'planner' && planTb && !$('#xSemMgr')) {
-    planTb.insertAdjacentHTML('beforeend', '<div class="row wrap no-print"><button class="btn small" id="xSemMgr" type="button">🗓️ סמסטרים</button><button class="btn small" id="xExams" type="button">📅 מבחנים</button><button class="btn small" id="xPrint" type="button">🖨️ הדפסה</button><button class="btn small primary" id="xAdv" type="button">🤖 יועץ תואר</button></div>');
+    planTb.insertAdjacentHTML('beforeend', '<div class="row wrap no-print"><button class="btn small tip" id="xSemMgr" type="button" aria-label="סמסטרים">🗓️</button><button class="btn small tip" id="xExams" type="button" aria-label="מבחנים">✍️</button><button class="btn small tip" id="xPrint" type="button" aria-label="הדפסה">🖨️</button><button class="btn small primary tip" id="xAdv" type="button" aria-label="יועץ תואר">🤖</button></div>');
     $('#xAdv').onclick = () => openAdvisor();
     $('#xSemMgr').onclick = openSemesterManager;
     $('#xExams').onclick = openExamCalendar;

@@ -671,3 +671,32 @@ h4.bucket-title { margin: 10px 0 6px; font-size: .85rem; }
 #stats:hover .stat:not(.tasks-stat) { border-color: var(--blue); }
 #stats.active .stat:not(.tasks-stat) { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
 .hbtn.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
+/* ---------- icon buttons whose panel opens on hover ---------- */
+.btn.icon-btn { padding: 8px 10px; font-size: 1.05rem; line-height: 1; position: relative; }
+.pop-count { position: absolute; top: -6px; inset-inline-end: -6px; min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: 9px; background: var(--blue); color: #fff; font-size: .7rem; font-style: normal; font-weight: 800;
+  display: grid; place-items: center; }
+.hover-pop { position: relative; }
+.pop-panel { display: none; position: absolute; top: 100%; inset-inline-end: 0; z-index: 30;
+  width: min(380px, calc(100vw - 32px)); max-height: 70dvh; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px;
+  box-shadow: 0 12px 30px var(--shadow); }
+/* A transparent strip above the panel so the pointer can cross the gap without it closing. */
+.pop-panel::before { content: ''; position: absolute; inset-inline: 0; top: -10px; height: 10px; }
+.hover-pop:hover .pop-panel, .hover-pop:focus-within .pop-panel, .hover-pop.open .pop-panel { display: block; margin-top: 6px; }
+.pop-panel > b { display: block; margin-bottom: 4px; }
+.pop-panel .cat-picks { margin-bottom: 8px; }
+
+/* Icon-only buttons: the name shows in a small label under the icon on hover / keyboard focus.
+   It reads aria-label, so the English translation (i18n.js) applies to it too. */
+.btn.tip { position: relative; padding: 8px 10px; font-size: 1.05rem; line-height: 1; }
+.btn.small.tip { padding: 5px 8px; font-size: .95rem; }
+.btn.tip::after {
+  content: attr(aria-label); position: absolute; top: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 8px; font-size: .78rem; font-weight: 600; white-space: nowrap; pointer-events: none; z-index: 40;
+  box-shadow: 0 6px 16px var(--shadow-soft); opacity: 0; visibility: hidden; transition: opacity .12s;
+}
+.btn.tip:hover::after, .btn.tip:focus-visible::after { opacity: 1; visibility: visible; }
+.btn.tip .gicon { width: 18px; height: 18px; display: block; }
+@media (hover: none) { .btn.tip::after { display: none; } }
