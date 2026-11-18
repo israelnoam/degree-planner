@@ -1023,13 +1023,23 @@ function fsFixTex(v, key) {
 // Tokens and estimated cost. USD per million tokens for CV_MODEL (Claude Opus 5.5): input, output,
 // reading the cached sources, writing them to the cache. An estimate: the bill is in your Anthropic account.
 const FS_PRICE = { in: 4, out: 20, read: 0.2, write: 5 };
-function fsAddUsage(total, u) {
+// The course digest is a distilling job (read everything, keep the substance): Claude Sonnet 5.5
+// does it well at half the price of Opus, and it is where most of the tokens go. The sheet itself
+// (plan, sections, check) stays on Opus.
+const FS_DIGEST_MODEL = 'claude-sonnet-5-5';
+const FS_PRICES = { 'claude-opus-5-5': FS_PRICE, 'claude-sonnet-5-5': { in: 2, out: 10, read: 0.1, write: 2.5 } };
+const fsUsdOf = (u, p) => ((u.in || 0) * p.in + (u.out || 0) * p.out + (u.read || 0) * p.read + (u.write || 0) * p.write) / 1e6;
+// Adds one answer's tokens, and its cost at the price of the model that wrote it (half in a batch).
+function fsAddUsage(total, u, model) {
   if (!u) return;
-  total.in += u.input_tokens || 0; total.out += u.output_tokens || 0;
-  total.read += u.cache_read_input_tokens || 0; total.write += u.cache_creation_input_tokens || 0;
+  if (total.usd == null) total.usd = fsUsdOf(total, FS_PRICE) * (total.batch ? 0.5 : 1);
+  const one = { in: u.input_tokens || 0, out: u.output_tokens || 0, read: u.cache_read_input_tokens || 0, write: u.cache_creation_input_tokens || 0 };
+  total.in += one.in; total.out += one.out; total.read += one.read; total.write += one.write;
+  total.usd += fsUsdOf(one, FS_PRICES[String(model || '').replace(/-\d{8}$/, '')] || FS_PRICE) * (total.batch ? 0.5 : 1);
   total.calls = (total.calls || 0) + 1;
 }
-const fsUsd = u => ((u.in || 0) * FS_PRICE.in + (u.out || 0) * FS_PRICE.out + (u.read || 0) * FS_PRICE.read + (u.write || 0) * FS_PRICE.write) / 1e6 * (u.batch ? 0.5 : 1); // batches: half price
+// Older records have no "usd" (everything was Opus then).
+const fsUsd = u => (u.usd != null ? u.usd : fsUsdOf(u, FS_PRICE) * (u.batch ? 0.5 : 1)); // batches: half price
 const fsK = n => (n >= 1000 ? Math.round(n / 1000) + 'K' : String(n || 0));
 const fsUsageText = u => `~$${fsUsd(u).toFixed(2)} (${fsK((u.in || 0) + (u.read || 0) + (u.write || 0))} טוקנים קלט, ${fsK(u.out)} פלט, ${u.calls || 0} בקשות)`;
 
@@ -1052,7 +1062,7 @@ async function fsAiRaw(prompt, tail, opts = {}) {
   const watchdog = setInterval(() => { if (Date.now() - last > FS_STALL_MS) { stalled = true; stop(); } }, 5000);
   try {
     const stream = client.beta.messages.stream({
-      model: CV_MODEL,
+      model: opts.model || CV_MODEL,
       max_tokens: maxTokens,
       betas: ['server-side-fallback-2026-07-01'],
       fallbacks: 'default',
@@ -1062,7 +1072,7 @@ async function fsAiRaw(prompt, tail, opts = {}) {
     }, { signal: ac.signal });
     stream.on?.('streamEvent', () => { last = Date.now(); if (!started) { started = true; opts.onStart?.(); } });
     const response = await stream.finalMessage();
-    opts.onUsage?.(response.usage);
+    opts.onUsage?.(response.usage, response.model);
     if (response.stop_reason === 'refusal') throw new Error('הבקשה נדחתה');
     if (response.stop_reason === 'max_tokens') throw new Error('התשובה נחתכה (ארוכה מדי). נסה בקשה מצומצמת יותר.');
     return response.content.filter(b => b.type === 'text').map(b => b.text).join('');
@@ -1158,9 +1168,10 @@ function fsDigestChunks(items) {
   for (const it of items) {
     if (!it.text && !it.doc) continue;
     const size = it.text.length + (it.doc ? it.doc.pages * 3000 : 0);
-    if (cur && (cur.size + size > 75000 || cur.pages + (it.doc?.pages || 0) > 30)) flush();
-    cur = cur || { text: '', docs: [], names: [], size: 0, pages: 0 };
-    if (it.doc) { cur.docs.push(it.doc.doc); cur.pages += it.doc.pages; cur.text += `\n--- ${it.name}: scanned, attached as a document (source kind: ${it.kind}) ---\n`; }
+    // A request may be at most 32MB, and a scan goes in base64 (a third bigger): up to 16MB of scans a part.
+    if (cur && (cur.size + size > 75000 || cur.pages + (it.doc?.pages || 0) > 30 || cur.bytes + (it.doc?.bytes || 0) > 16e6)) flush();
+    cur = cur || { text: '', docs: [], names: [], size: 0, pages: 0, bytes: 0 };
+    if (it.doc) { cur.docs.push(it.doc.doc); cur.pages += it.doc.pages; cur.bytes += it.doc.bytes || 0; cur.text += `\n--- ${it.name}: scanned, attached as a document (source kind: ${it.kind}) ---\n`; }
     else cur.text += `\n<source kind="${it.kind}" label="${esc(it.label)}" file="${esc(it.name)}">\n${it.text}\n</source>\n`;
     cur.names.push(it.name); cur.size += size;
   }
@@ -1181,7 +1192,7 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
   say('קורא את החומרים…');
   if (currentView === 'formula' && !fsOpenId) render();
   try {
-    const src = await fsReadMaterials({ course: code }, files, usePangea, useDrive, say, '');
+    const src = await fsReadMaterials({ course: code }, files, usePangea, useDrive, say, '', { split: true });
     if (!src.count) throw new Error('לא נבחרו חומרים (או שאף קובץ לא נקרא), ואין ממה להכין תקציר.');
     // One long answer from Claude took 10+ minutes (it writes at a fixed speed). So the materials are
     // split into parts that are digested at the same time, and the parts are joined in order.
@@ -1202,7 +1213,7 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
         const ch = chunks[i], room = Math.max(1500, Math.round(15000 * ch.weight / total));
         for (let attempt = 1; ; attempt++) {
           try {
-            outs[i] = (await fsAiText([...ch.docs, { type: 'text', text: fsDigestPartAsk(c, i, chunks.length, ch, room) }], { maxTokens: 32000, effort: 'medium', onUsage: u => fsAddUsage(used, u) })).trim();
+            outs[i] = (await fsAiText([...ch.docs, { type: 'text', text: fsDigestPartAsk(c, i, chunks.length, ch, room) }], { maxTokens: 32000, effort: 'medium', model: FS_DIGEST_MODEL, onUsage: (u, m) => fsAddUsage(used, u, m) })).trim();
             fsPartsPut(code, fsPartSig(ch), outs[i]);
             break;
           } catch (e) {
@@ -1224,9 +1235,9 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
     const text = outs.map((t, i) => (t ? `<!-- חלק ${i + 1}: ${chunks[i].names.join(', ')} -->\n${t}` : '')).filter(Boolean).join('\n\n');
     if (text.length < 500) throw new Error('התקציר שחזר קצר מדי. נסה שוב.');
     if (failed.length) src.left.push(...failed.flatMap(f => chunks[f.i].names));
-    Store.put('digest', code, { text, at: Date.now(), n: src.count, ai: used });
+    Store.put('digest', code, { text, at: Date.now(), n: src.count, ai: used, model: FS_DIGEST_MODEL });
     fsPartsClear(code);
-    toast(`📚 התקציר של ${c?.name || code} מוכן · ${fsUsageText(used).split(' (')[0]}${src.left.length ? ` · לא נקראו: ${src.left.join(', ')}` : ''} · עכשיו אפשר ליצור ממנו נוסחאון`);
+    toast(`📚 התקציר של ${c?.name || code} מוכן · ${fsUsageText(used).split(' (')[0]}${src.left.length ? ` · לא נקראו: ${src.left.join(', ')}` : ''}${fsTwinsNote(src.twins)} · עכשיו אפשר ליצור ממנו נוסחאון`);
   } catch (e) {
     console.error('course digest failed at', stage, e);
     fsDigestErr[code] = { msg: aiError(e).text, stage, at: Date.now(), detail: fsErrDetail(e), used: used.calls ? { ...used } : null, rate: !!e?.fsRate || e?.status === 429, kept: e?.fsKept || 0 };
@@ -1292,6 +1303,7 @@ function fsDigestDialog(code0) {
   const hasKey = !!claudeKey();
   openModal(`<h2>📚 תקציר קורס</h2>
     <p class="muted">שלב הכנה, פעם אחת לכל קורס: Claude קורא את כל החומרים וכותב מסמך מרוכז אחד (נוסחאות, סימונים, סד״פ, סוגי שאלות). אחר כך כל נוסחאון של הקורס נכתב מהתקציר במקום מכל החומרים, וזה חוסך את רוב עלות הקלט. מה שלא נכנס לתקציר לא יגיע לנוסחאון, אז אפשר לקרוא ולתקן אותו כאן.</p>
+    <p class="muted small">התקציר נכתב ב-Claude Sonnet 5.5 (זיקוק, בחצי מחיר); הנוסחאון עצמו ב-Opus 5.5. סריקה של חומר שיש לו גם קובץ מוקלד (אותו סוג ואותם מספרים בשם, למשל "הרצאה 3 סרוקה" ו"הרצאה 3") מדולגת אוטומטית.</p>
     <label class="field"><span class="field-label">קורס</span><select name="course" id="fsCourse">
       ${active.length ? `<optgroup label="בלימוד">${active.map(opt).join('')}</optgroup>` : ''}
       <optgroup label="כל הקורסים">${list.filter(c => c.status !== 'active').map(opt).join('')}</optgroup></select></label>
@@ -1437,9 +1449,9 @@ const fsJsonTail = schema => `FORMAT: answer with ONE JSON object only (no prose
 ${JSON.stringify(schema)}`;
 const FS_TEXT_TAIL = 'FORMAT: plain text with Markdown headings and lists, math in $...$. No JSON.';
 // One request of a batch: exactly what a direct call sends (a batch can't carry "fallbacks").
-function fsBatchReq(id, prompt, tail, maxTokens, effort) {
+function fsBatchReq(id, prompt, tail, maxTokens, effort, model = CV_MODEL) {
   const content = typeof prompt === 'string' ? `${prompt}\n\n${tail}` : [...prompt, { type: 'text', text: tail }];
-  return { custom_id: id, params: { model: CV_MODEL, max_tokens: maxTokens, system: FS_SYSTEM, output_config: { effort }, messages: [{ role: 'user', content }] } };
+  return { custom_id: id, params: { model, max_tokens: maxTokens, system: FS_SYSTEM, output_config: { effort }, messages: [{ role: 'user', content }] } };
 }
 
 // How long a stage takes, from your earlier batches (median of the last 10), else a general guess.
@@ -1485,10 +1497,19 @@ function fsNotify(title, body) {
 }
 
 // ---- starting ----
+const fsBatchMem = {}; // job key → its requests by id, kept in memory to resend failed ones
+// Joins the saved parts of a digest (in order) into the course digest.
+function fsDigestSave(job) {
+  const saved = fsPartsAll()[job.code] || {};
+  const text = job.names.map((names, i) => `<!-- חלק ${i + 1}: ${names.join(', ')} -->\n${saved[job.sigs[i]]}`).join('\n\n');
+  Store.put('digest', job.code, { text, at: Date.now(), n: job.count, ai: job.used, model: FS_DIGEST_MODEL });
+  delete fsDigestErr[job.code]; fsDigestErrSave(); fsPartsClear(job.code);
+  fsDigestRefresh(job.code);
+}
 async function fsBatchSubmit(key, job, requests) {
   const client = await claudeClient();
   const b = await client.messages.batches.create({ requests });
-  fsJobPut(key, { ...job, batchId: b.id, at: Date.now(), counts: null, error: '' });
+  fsJobPut(key, { ...job, batchId: b.id, at: Date.now(), counts: null, error: '', fails: 0 });
   fsBatchSchedule(5000);
   fsBatchRedraw(key);
 }
@@ -1516,16 +1537,23 @@ async function fsBatchStartDigest(code, files, usePangea, useDrive) {
   delete fsDigestErr[code]; fsDigestErrSave();
   fsDigestRun[code] = 'קורא את החומרים…'; fsDigestRefresh(code);
   try {
-    const src = await fsReadMaterials({ course: code }, files, usePangea, useDrive, t => { fsDigestRun[code] = String(t).replace(/<[^>]+>/g, ''); fsDigestRefresh(code); }, '');
+    const src = await fsReadMaterials({ course: code }, files, usePangea, useDrive, t => { fsDigestRun[code] = String(t).replace(/<[^>]+>/g, ''); fsDigestRefresh(code); }, '', { split: true });
     stage = 'שליחה לתור החסכוני';
     fsDigestRun[code] = `שולח ${src.count} מקורות לתור…`; fsDigestRefresh(code);
     if (!src.count) throw new Error('לא נבחרו חומרים (או שאף קובץ לא נקרא), ואין ממה להכין תקציר.');
     const chunks = fsDigestChunks(src.items);
     const total = chunks.reduce((s, ch) => s + ch.weight, 0) || 1;
-    const used = { in: 0, out: 0, read: 0, write: 0, calls: 0, batch: true };
-    await fsBatchSubmit(key, { type: 'digest', code, stage: 'digest', t0: Date.now(), used, names: chunks.map(ch => ch.names), count: src.count, left: src.left },
-      chunks.map((ch, i) => fsBatchReq('p' + i, [...ch.docs, { type: 'text', text: fsDigestPartAsk(c, i, chunks.length, ch, Math.max(1500, Math.round(15000 * ch.weight / total))) }], FS_TEXT_TAIL, 32000, 'medium')));
-    toast(`💰 התקציר של ${c?.name || code} נשלח לתור החסכוני (${chunks.length} חלקים). תקבל התראה כשמוכן.`);
+    const used = { in: 0, out: 0, read: 0, write: 0, calls: 0, batch: true, usd: 0 };
+    const job = { type: 'digest', code, stage: 'digest', t0: Date.now(), used, names: chunks.map(ch => ch.names), sigs: chunks.map(fsPartSig), count: src.count, left: src.left, twins: src.twins };
+    // Parts already written in an earlier attempt (fast or economy) with the same files are not sent again.
+    const saved = fsPartsAll()[code] || {};
+    const todo = chunks.map((ch, i) => i).filter(i => !saved[job.sigs[i]]);
+    if (!todo.length) { fsDigestSave(job); toast(`📚 התקציר של ${c?.name || code} הורכב מהחלקים שכבר נכתבו, בלי עלות נוספת.`); return; }
+    const reqs = todo.map(i => fsBatchReq('p' + i, [...chunks[i].docs, { type: 'text', text: fsDigestPartAsk(c, i, chunks.length, chunks[i], Math.max(1500, Math.round(15000 * chunks[i].weight / total))) }], FS_TEXT_TAIL, 32000, 'medium', FS_DIGEST_MODEL));
+    fsBatchMem[key] = Object.fromEntries(reqs.map(r => [r.custom_id, r])); // for one retry of failed parts (while the app stays open)
+    await fsBatchSubmit(key, job, reqs);
+    const reused = chunks.length - todo.length;
+    toast(`💰 התקציר של ${c?.name || code} נשלח לתור החסכוני (${todo.length} חלקים${reused ? `; ${reused} נלקחו מהניסיון הקודם` : ''})${fsTwinsNote(src.twins)}. תקבל התראה כשמוכן.`);
   } catch (e) {
     console.error('economy digest failed at', stage, e);
     fsDigestErr[code] = { msg: aiError(e).text, stage, at: Date.now(), detail: fsErrDetail(e), rate: e?.status === 429, batch: true };
@@ -1551,13 +1579,22 @@ async function fsBatchPoll() {
         const res = {};
         for await (const r of await client.messages.batches.results(job.batchId)) {
           if (r.result?.type === 'succeeded') {
-            const m = r.result.message;
-            fsAddUsage(job.used, m.usage);
-            res[r.custom_id] = m.stop_reason === 'refusal' ? { error: 'הבקשה נדחתה' } : m.stop_reason === 'max_tokens' ? { error: 'התשובה נחתכה' } : { text: m.content.filter(x => x.type === 'text').map(x => x.text).join('') };
+            const m = r.result.message, text = m.content.filter(x => x.type === 'text').map(x => x.text).join('');
+            fsAddUsage(job.used, m.usage, m.model);
+            // A cut answer keeps what was written: a digest part is still useful (a JSON one won't parse and is resent).
+            res[r.custom_id] = m.stop_reason === 'refusal' ? { error: 'הבקשה נדחתה' } : m.stop_reason === 'max_tokens' ? { text, cut: true, error: 'התשובה נחתכה' } : { text };
           } else res[r.custom_id] = { error: r.result?.type === 'expired' ? 'פג הזמן בתור' : r.result?.type === 'canceled' ? 'בוטל' : (r.result?.error?.error?.message || r.result?.error?.type || 'שגיאה') };
         }
-        fsStageDone(job.stage, Date.now() - job.at);
-        await fsBatchAdvance(key, job, res);
+        if (!job.fails) fsStageDone(job.stage, Date.now() - job.at); // once a stage, so retries don't skew the estimate
+        try { await fsBatchAdvance(key, job, res); }
+        catch (e) {
+          // Sending the next stage failed. Without this the job stayed "in the queue" for ever, retried
+          // every minute in silence. A request the API turned away (4xx) stops at once, anything else after 3 tries.
+          console.error('batch advance', key, e);
+          const cur = fsJob(key), fails = (cur?.fails || 0) + 1;
+          if (cur && ((e?.status >= 400 && e?.status < 500 && e?.status !== 429) || fails >= 3)) fsBatchFail(key, cur, `שליחת השלב הבא נכשלה: ${aiError(e).text}${fsErrDetail(e) ? ` (${fsErrDetail(e)})` : ''}`);
+          else if (cur) fsJobPut(key, { ...cur, fails });
+        }
       } catch (e) {
         console.error('batch', key, e);
         if (e?.status === 404 || e?.status === 401) fsJobPut(key, { ...job, error: aiError(e).text });
@@ -1570,7 +1607,30 @@ const fsBatchFail = (key, job, msg) => { fsJobPut(key, { ...job, error: msg }); 
 
 // A stage has ended: read its answers and send the next stage (or finish).
 async function fsBatchAdvance(key, job, res) {
-  if (job.type === 'digest') {
+  if (job.type === 'digest' && job.sigs) {
+    // Every part that came back is saved at once (by its files), so nothing paid for is lost.
+    for (const [cid, r] of Object.entries(res)) if (r.text?.trim()) fsPartsPut(job.code, job.sigs[+cid.slice(1)], r.text.trim() + (r.cut ? '\n\n<!-- החלק נחתך כאן (ארוך מדי) -->' : ''));
+    const saved = fsPartsAll()[job.code] || {}, c = courseByCode(job.code);
+    const missing = job.names.map((n, i) => i).filter(i => !saved[job.sigs[i]]);
+    const mem = fsBatchMem[key];
+    if (missing.length && !job.retried && mem && missing.every(i => mem['p' + i])) // once more, only the failed ones
+      return fsBatchSubmit(key, { ...job, retried: true }, missing.map(i => mem['p' + i]));
+    if (missing.length) {
+      // Like the fast mode: a digest with a part missing would miss that material in every sheet, so it
+      // is not saved. The parts that were written stay, and "try again" with the same files sends only the rest.
+      const why = missing.map(i => res['p' + i]?.error).find(Boolean) || 'שגיאה';
+      fsJobPut(key, null); delete fsBatchMem[key];
+      fsDigestErr[job.code] = { msg: `${missing.length} מתוך ${job.names.length} חלקים לא נכתבו (${why})`, stage: 'זיקוק בתור החסכוני', at: Date.now(), used: job.used, kept: job.names.length - missing.length, batch: true };
+      fsDigestErrSave();
+      fsNotify(`⚠️ התקציר של ${c?.name || job.code} לא הושלם`, `${missing.length} חלקים חסרים (${why}). החלקים שנכתבו נשמרו: נסה שוב עם אותם קבצים, ורק החסרים יישלחו.`);
+      return;
+    }
+    fsDigestSave(job);
+    fsJobPut(key, null); delete fsBatchMem[key];
+    fsNotify(`📚 התקציר של ${c?.name || job.code} מוכן`, `${fsUsageText(job.used).split(' (')[0]}${job.left?.length ? ` · לא נקראו: ${job.left.join(', ')}` : ''}${fsTwinsNote(job.twins)}. עכשיו אפשר ליצור ממנו נוסחאון.`);
+    return;
+  }
+  if (job.type === 'digest') { // a job sent by an older version (no saved parts)
     const parts = job.names.map((names, i) => (res['p' + i]?.text ? `<!-- חלק ${i + 1}: ${names.join(', ')} -->\n${res['p' + i].text.trim()}` : ''));
     const failed = job.names.filter((n, i) => !parts[i]);
     if (failed.length > job.names.length / 2) return fsBatchFail(key, job, `רוב חלקי התקציר נכשלו (${Object.values(res).find(r => r.error)?.error || ''}). נסה שוב.`);
@@ -1707,7 +1767,9 @@ const fsClock = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${
 document.addEventListener('click', e => { if (e.target.closest?.('[data-fsgen-cancel]')) fsGen[fsOpenId]?.cancel?.(); });
 
 // Reads everything you attached (and the Drive folder / Pangea if asked) into text and documents.
-async function fsReadMaterials(sheet, files, usePangea, useDrive, say, digest) {
+// opts.split: the materials will be split into parts (the course digest), so the limit on scans is
+// per part (each scan up to 90 pages and 16MB) and not on all of them together.
+async function fsReadMaterials(sheet, files, usePangea, useDrive, say, digest, opts = {}) {
   const parts = [];
   const driveFailed = [];
   if (useDrive) {
@@ -1739,32 +1801,39 @@ async function fsReadMaterials(sheet, files, usePangea, useDrive, say, digest) {
   let docPages = 0, docBytes = 0;
   const budget = { exams: 120000, material: 80000, summaries: 60000, slides: 60000, tutorials: 40000, hw: 30000, inspire: 30000, pangea: 60000 };
   const items = []; // the same material file by file (the digest splits it into parts that run in parallel)
-  for (const [k, l] of [...FS_SOURCES, ['inspire', 'existing formula sheet (style/inspiration only)']]) {
+  const kinds = [...FS_SOURCES, ['inspire', 'existing formula sheet (style/inspiration only)']];
+  // First every file is read once, so a scan can be compared with the typed files.
+  const read = [];
+  for (const [k] of kinds) for (const f of (files || {})[k] || []) {
+    say(`📖 קורא ${esc(f.name)}…`);
+    try {
+      if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') {
+        const { text: t, pages } = await fsPdfText(f);
+        read.push({ k, f, t, pages, scan: t.replace(/\s/g, '').length < pages * 150 }); // mostly scans
+      } else read.push({ k, f, t: /\.json$/i.test(f.name) ? await f.text() : await fileToText(f) });
+    } catch (e) { console.warn('formula sheet: could not read', f.name, e); skipped.push(f.name); }
+  }
+  // A scan of something that is also here typed (same kind, same numbers in the name) is left out:
+  // the typed file has the same content for a fraction of the tokens.
+  const twins = read.filter(r => r.scan && read.some(o => !o.scan && o.k === r.k && fsTwinNames(r.f.name, o.f.name))).map(r => r.f.name);
+  const capPages = opts.split ? 400 : 90, capBytes = opts.split ? 80e6 : 16e6;
+  for (const [k, l] of kinds) {
     let text = '', room = budget[k];
     const item = (name, t, doc) => { const s = String(t || '').slice(0, Math.max(0, room)); room -= s.length; items.push({ kind: k, label: l, name, text: s, doc }); };
-    for (const f of (files || {})[k] || []) {
-      say(`📖 קורא ${esc(f.name)}…`);
-      try {
-        if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') {
-          const { text: t, pages } = await fsPdfText(f);
-          if (t.replace(/\s/g, '').length < pages * 150) { // mostly scans
-            // A request may be at most 32MB, and a scan is sent in base64 (a third bigger).
-            if (docPages + pages <= 90 && docBytes + f.size <= 16e6) {
-              docPages += pages; docBytes += f.size;
-              docs.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: await fsBase64(f) }, title: f.name, context: `source kind: ${k} (${l})` });
-              text += `\n--- ${f.name}: scanned, attached as a document ---\n`;
-              item(f.name, '', { doc: docs[docs.length - 1], pages });
-            } else skipped.push(f.name);
-            continue;
-          }
-          text += `\n--- ${f.name} ---\n${t}`;
-          item(f.name, t);
-        } else {
-          const t = /\.json$/i.test(f.name) ? await f.text() : await fileToText(f);
-          text += `\n--- ${f.name} ---\n` + t;
-          item(f.name, t);
-        }
-      } catch (e) { console.warn('formula sheet: could not read', f.name, e); skipped.push(f.name); }
+    for (const { f, t, pages, scan } of read.filter(r => r.k === k && !twins.includes(r.f.name))) {
+      if (scan) {
+        // A request may be at most 32MB, and a scan is sent in base64 (a third bigger). Split into
+        // parts, each part is its own request, so the limit is per file (the parts keep to 16MB each).
+        if (docPages + pages <= capPages && docBytes + f.size <= capBytes && pages <= 90 && f.size <= 16e6) {
+          docPages += pages; docBytes += f.size;
+          docs.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: await fsBase64(f) }, title: f.name, context: `source kind: ${k} (${l})` });
+          text += `\n--- ${f.name}: scanned, attached as a document ---\n`;
+          item(f.name, '', { doc: docs[docs.length - 1], pages, bytes: f.size });
+        } else skipped.push(f.name);
+        continue;
+      }
+      text += `\n--- ${f.name} ---\n${t}`;
+      item(f.name, t);
     }
     if (text.trim()) parts.push(`<source kind="${k}" label="${esc(l)}">\n${text.slice(0, budget[k])}\n</source>`);
   }
@@ -1782,10 +1851,22 @@ async function fsReadMaterials(sheet, files, usePangea, useDrive, say, digest) {
     if (text.trim()) parts.push(`<source kind="summaries" label="Pangea student summaries">\n${text.slice(0, budget.pangea)}\n</source>`);
   }
   const left = [...skipped, ...driveFailed];
-  const count = parts.length ? Object.values(files || {}).reduce((s, a) => s + a.length, 0) - skipped.length + (usePangea ? Pangea.course(sheet.course)?.pages.length || 0 : 0) : 0;
+  const count = parts.length ? Object.values(files || {}).reduce((s, a) => s + a.length, 0) - skipped.length - twins.length + (usePangea ? Pangea.course(sheet.course)?.pages.length || 0 : 0) : 0;
   if (digest) parts.unshift(`<course_digest note="prepared earlier from the full course materials; treat it as the main source">\n${digest}\n</course_digest>`);
-  return { docs, items, text: parts.join('\n\n') || '(no files: use your knowledge of the standard Technion syllabus for this course)', left, count };
+  return { docs, items, text: parts.join('\n\n') || '(no files: use your knowledge of the standard Technion syllabus for this course)', left, count, twins };
 }
+// Two file names of the same material: the same numbers (lecture 3, 2024…) and a word in common,
+// once words like "scan" / "סרוק" and copy marks like "(1)" are taken out.
+function fsTwinNames(a, b) {
+  const words = n => String(n).toLowerCase().replace(/\.[a-z0-9]{2,5}$/, '').replace(/\(\d+\)/g, ' ')
+    .replace(/\b(scan(ned)?|copy|final|typed|handwritten)\b|סרוק[הים]*|סריק[הות]*|כתב[\s_-]*יד|עותק|מוקלד[תים]*/g, ' ')
+    .split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const wa = words(a), wb = words(b);
+  const num = w => w.filter(x => /^\d+$/.test(x)).map(Number).join(',');
+  if (wa.join(' ') === wb.join(' ')) return wa.length > 0;
+  return num(wa) !== '' && num(wa) === num(wb) && wa.some(x => !/^\d+$/.test(x) && wb.includes(x));
+}
+const fsTwinsNote = twins => (twins?.length ? ` · דולגו ${twins.length} סריקות שיש להן גרסה מוקלדת (${twins.join(', ')})` : '');
 
 async function fsGenerate(id, files, usePangea, useDrive, useDigest) {
   const prev = fsGen[id];
@@ -1807,7 +1888,7 @@ async function fsGenerate(id, files, usePangea, useDrive, useDigest) {
   let stage = 'הכנת החומרים'; // named in the error, so a failure says where it happened
   const say = (text, name) => { if (name) stage = name; setStatus(`<span class="muted">${text}</span>`); };
   const used = work.used = work.used || { in: 0, out: 0, read: 0, write: 0, calls: 0 }; // kept across "try again"
-  const call = (content, schema, maxTokens, effort = 'high', onStart) => fsAiCall(content, schema, { maxTokens, effort, signal: ac.signal, onUsage: u => fsAddUsage(used, u), onStart });
+  const call = (content, schema, maxTokens, effort = 'high', onStart) => fsAiCall(content, schema, { maxTokens, effort, signal: ac.signal, onUsage: (u, m) => fsAddUsage(used, u, m), onStart });
   try {
     say('📖 מכין את החומרים…');
     const sheet = Store.get('sheet', id);
