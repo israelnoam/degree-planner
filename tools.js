@@ -49,6 +49,9 @@ const MY_APPS = [
   { id: 'learning-helper', title: 'Learning Helper · מכניקת מוצקים 2מ', url: 'https://solids2-visual-lessons.vercel.app/',
     folder: 'C:\\Users\\israe\\Learning Helper', vscode: 'vscode://file/C:/Users/israe/Learning%20Helper',
     logo: 'icons/logos/learning-helper.svg', color: '#2456c9' },
+  { id: 'steam-tables', title: 'טבלאות קיטור · תרמודינמיקה 1', url: 'https://israelnoam.github.io/steam-tables/',
+    folder: 'C:\\Users\\israe\\Projects\\steam-tables-calculator', vscode: 'vscode://file/C:/Users/israe/Projects/steam-tables-calculator',
+    logo: 'icons/logos/steam-tables.svg', color: '#0b6bcb' },
 ];
 
 function myAppCard(a) {
