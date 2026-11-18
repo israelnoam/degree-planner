@@ -17,15 +17,16 @@ const FS_PROFILES = {
   code: '💻 קוד',
 };
 // What each choice asks the AI for (also shown as a tooltip on the checkbox).
+// What each choice adds, and when to tick it (shown when hovering over the option).
 const FS_PROFILE_HINTS = {
-  figures: 'איורים ושרטוטים בסגנון חומרי הקורס',
-  derivations: 'נוסחאות, זהויות ופיתוחים קצרים',
-  procedures: 'סדר פעולות לכל סוג שאלה במבחן, כולל איך מזהים את סוג הבעיה ובאיזו שיטה פותרים',
-  tables: 'טבלאות מקרים, השוואות וסימנים',
-  proofs: 'ניסוח משפטים, תנאים ורעיון ההוכחה',
-  code: 'קטעי קוד ותחביר (פייתון, MATLAB…) בגופן קוד',
+  figures: 'מוסיף: איורים ושרטוטים (SVG) בסגנון חומרי הקורס.\n✅ לסמן כשהשרטוט הוא חלק מהפתרון: מוצקים, סטטיקה, דינמיקה, זרימה, חשמל ומגנטיות (שדות, מעגלים), אופטיקה, מעבר חום.\n❌ לא במתמטיקה (מד״ר, מד״ח, אינפי, אלגברה): שם האיורים רק תופסים מקום.',
+  derivations: 'מוסיף: נוסחאות, זהויות ופיתוחים קצרים.\n✅ כמעט תמיד.\n❌ רק בקורס תכנות או קורס מילולי לגמרי.',
+  procedures: 'מוסיף: לכל סוג שאלה במבחן זיהוי, סדר פעולות (סד״פ) ובחירת שיטה. זה הלב של התבנית.\n✅ כמעט תמיד, ובמיוחד בקורסים של "פתור את הבעיה".\n❌ רק בקורס שכולו שינון הגדרות.',
+  tables: 'מוסיף: טבלאות מקרים, השוואות, ערכים וסימנים.\n✅ כשיש הרבה מקרים להשוות או ערכים לשלוף: תרמודינמיקה, התמרות לפלס ופורייה, מקרי עומס בקורות, תכונות חומרים, אינטגרלים.\n❌ כשהקורס בנוי מנוסחאות בודדות: הטבלאות יבואו על חשבון סד״פ.',
+  proofs: 'מוסיף: משפטים עם תנאיהם, המסקנה, ואיך משתמשים בהם בשאלה.\n✅ כששואלים במבחן "הוכח", "נמק" או "האם קיים", או כשיש משפטי קיום ויחידות, מקסימום וכו׳ (מד״ר, מד״ח, אינפי, אלגברה).\n❌ בקורס חישובי טהור (רוב קורסי ההנדסה).',
+  code: 'מוסיף: קטעי קוד ותחביר בגופן קוד.\n✅ רק בקורס שבו כותבים או קוראים קוד במבחן: מבוא למדמ״ח, פייתון, MATLAB.\n❌ לא בשביל אלגוריתם פתרון ידני: זה כבר בסד״פ.',
 };
-const fsProfileChecks = sel => Object.entries(FS_PROFILES).map(([k, l]) => `<label class="chip" title="${esc(FS_PROFILE_HINTS[k] || '')}"><input type="checkbox" name="p" value="${k}" ${sel.includes(k) ? 'checked' : ''}> ${l}</label>`).join('');
+const fsProfileChecks = sel => Object.entries(FS_PROFILES).map(([k, l]) => `<label class="chip fs-tip" data-tip="${esc(FS_PROFILE_HINTS[k] || '')}" aria-label="${esc(l)}: ${esc(FS_PROFILE_HINTS[k] || '')}"><input type="checkbox" name="p" value="${k}" ${sel.includes(k) ? 'checked' : ''}> ${l}</label>`).join('');
 const FS_SOURCES = [
   ['exams', '📝 מבחנים קודמים', 'הכי חשוב: מה שחוזר במבחנים מקבל עדיפות ומקום'],
   ['material', '📚 חומרי הקורס', 'סילבוס, דפי נוסחאות רשמיים, ספר הקורס'],
@@ -271,6 +272,7 @@ function renderSheetList(root) {
           <button class="btn primary" type="button" id="fsNew">＋ נוסחאון חדש</button>
         </div>
       </div>
+      <div class="fs-list-wrap"><div>
       ${list.length ? `<div class="fs-list">${list.map(s => `
         <button type="button" class="fs-item" data-open="${esc(s.id)}">
           <span class="fs-thumb">📐</span>
@@ -279,6 +281,7 @@ function renderSheetList(root) {
         </button>`).join('')}</div>`
       : `<div class="fs-empty"><p>עוד אין נוסחאונים.</p><p class="muted">אפשר להתחיל מנוסחאון חדש, או לפתוח את הדוגמה (מכניקת מוצקים 1, בנויה מחדש מהנוסחאון שלך) כדי לראות איך זה עובד.</p></div>`}
       ${typeof FS_SAMPLE_SOLIDS !== 'undefined' ? `<div class="actions" style="justify-content:flex-start"><button class="btn" type="button" id="fsSample">📄 פתח דוגמה: מכניקת מוצקים 1</button></div>` : ''}
+      </div><aside class="fs-box fs-activity" id="fsActivity">${fsActivityHtml()}</aside></div>
     </section>`;
   $('#fsNew', root).onclick = () => fsNewSheet();
   $('#fsImport', root).onclick = () => fsImportJson();
@@ -1209,7 +1212,44 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
   }
 }
 // Redraws the state line of an open digest dialog for this course.
+// ---------- the "in progress" panel on the sheets page ----------
+// Everything being prepared right now: digests and sheets, fast or in the economy queue, with
+// their stage and (for the queue) the expected ready time. Click one to open it.
+function fsActivityHtml() {
+  const rows = [], name = code => esc(courseByCode(code)?.name || code);
+  const plain = h => esc(String(h || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
+  for (const [code, text] of Object.entries(fsDigestRun)) rows.push(`<li data-act-digest="${esc(code)}"><b>📚 תקציר ${name(code)}</b><small>⚡ ${plain(text)}</small></li>`);
+  for (const [key, job] of Object.entries(fsJobs())) {
+    const [type, id] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+    const eta = job.error ? null : fsJobEta(job);
+    const stage = job.type === 'sheet' ? ` · שלב ${FS_STAGES[job.stage]?.[1] || 1}/3` : '';
+    const what = type === 'digest' ? `📚 תקציר ${name(id)}` : `📐 ${esc(Store.get('sheet', id)?.title || 'נוסחאון')}`;
+    rows.push(`<li ${type === 'digest' ? `data-act-digest="${esc(id)}"` : `data-act-sheet="${esc(id)}"`} class="${job.error ? 'bad' : ''}"><b>${what}</b><small>${job.error ? `⚠️ נעצר: ${esc(job.error)}` : `💰 בתור החסכוני${stage} · מוכן בערך ב-${eta.at} (עוד ~${eta.min} דק׳)`}</small></li>`);
+  }
+  for (const [id, g] of Object.entries(fsGen)) {
+    const s = Store.get('sheet', id);
+    if (!s || !g) continue;
+    rows.push(`<li data-act-sheet="${esc(id)}" class="${g.state === 'error' ? 'bad' : ''}"><b>📐 ${esc(s.title || 'נוסחאון')}</b><small>${g.state === 'run' ? `⚡ ${plain(g.html)}` : `⚠️ ${plain(g.html)}`}</small></li>`);
+  }
+  const ready = Store.list('digest').sort((a, b) => (b.at || 0) - (a.at || 0));
+  return `<div class="fs-box-h"><b>⚙️ בתהליך</b>${rows.length ? `<small class="muted">${rows.length}</small>` : ''}</div>
+    ${rows.length ? `<ul class="fs-act-list">${rows.join('')}</ul>` : '<p class="muted small">אין כרגע מסמכים בהכנה.</p>'}
+    <p class="muted small">⚡ מהיר: נעצר אם סוגרים או מרעננים את האפליקציה. 💰 חסכוני: ממשיך גם אחרי סגירה.</p>
+    ${ready.length ? `<div class="fs-box-h"><b>📚 תקצירים מוכנים</b></div><ul class="fs-act-list">${ready.map(d => `<li data-act-digest="${esc(d.id)}"><b>${name(d.id)}</b><small>${esc(fsDigestInfo(d))}</small></li>`).join('')}</ul>` : ''}`;
+}
+function fsActivityRefresh() {
+  const box = $('#fsActivity');
+  if (box && currentView === 'formula' && !fsOpenId) box.innerHTML = fsActivityHtml();
+}
+document.addEventListener('click', e => {
+  const d = e.target.closest?.('#fsActivity [data-act-digest]'), s = e.target.closest?.('#fsActivity [data-act-sheet]');
+  if (d) fsDigestDialog(d.dataset.actDigest);
+  if (s) { fsOpenId = s.dataset.actSheet; render(); }
+});
+setInterval(fsActivityRefresh, 30000); // the expected times move on
+
 function fsDigestRefresh(code) {
+  fsActivityRefresh();
   const sel = $('#modal[open] #fsDigestState') && $('#modal #fsCourse');
   if (sel && sel.value === code) sel.dispatchEvent(new Event('change'));
   // The "new sheet" / "create" dialogs show the digest row: keep its line current too.
@@ -1527,6 +1567,7 @@ async function fsBatchCancel(key) {
   fsBatchRedraw(key);
 }
 function fsBatchRedraw(key) {
+  fsActivityRefresh();
   if (currentView !== 'formula') return;
   if (!fsOpenId || key === 'sheet:' + fsOpenId) { if (!$('#modal').open) render(); }
   if (key.startsWith('digest:')) fsDigestRefresh(key.slice(7));
@@ -1693,7 +1734,7 @@ async function fsGenerate(id, files, usePangea, useDrive, useDigest) {
   // The status lives in fsGen, so it survives every redraw of the editor (sync, edits, tab switches).
   const setStatus = (html, state = 'run') => {
     fsGen[id] = { state, html, files: given, usePangea, useDrive, useDigest, work, t0, cancel: () => ac.abort() };
-    if (currentView === 'formula' && !fsOpenId && state !== 'run') render(); // the list shows the sheet's state
+    if (currentView === 'formula' && !fsOpenId) { if (state !== 'run') render(); else fsActivityRefresh(); } // the list shows the sheet's state
     if (fsOpenId !== id || currentView !== 'formula') return;
     const st = $('#fsStatus'); if (st) st.innerHTML = html;
     const msg = $('#fsGenMsg');
