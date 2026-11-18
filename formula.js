@@ -1126,7 +1126,17 @@ ${scope === 'all' ? 'The whole sheet' : 'One section of it'}:\n${JSON.stringify(
 // of from the full materials, so each sheet costs a fraction of the input. Saved as a record of
 // kind "digest" (id = course code), so it syncs like everything else.
 const fsDigestRun = {}; // course code → the stage while its digest is being prepared
-const fsDigestErr = {}; // course code → { msg, stage, at } of the last failed attempt (kept until the next one)
+// course code → { msg, stage, at, used, rate } of the last failed attempt. Saved on the device, so a
+// failure is still shown (on the sheets page and in the digest dialog) after a refresh.
+const LS_FS_DIGEST_ERR = 'pp_fs_digest_err', LS_FS_DIGEST_PARTS = 'pp_fs_digest_parts';
+const fsDigestErr = (() => { try { return JSON.parse(lsGet(LS_FS_DIGEST_ERR, '{}')) || {}; } catch { return {}; } })();
+const fsDigestErrSave = () => lsSet(LS_FS_DIGEST_ERR, JSON.stringify(fsDigestErr));
+// Parts of a digest that were already written, kept until the digest is done: a second attempt
+// with the same files sends only the parts that are missing, so nothing paid for is thrown away.
+const fsPartsAll = () => { try { return JSON.parse(lsGet(LS_FS_DIGEST_PARTS, '{}')) || {}; } catch { return {}; } };
+function fsPartsPut(code, sig, text) { const all = fsPartsAll(); all[code] = { ...(all[code] || {}), [sig]: text }; if (!text) delete all[code][sig]; lsSet(LS_FS_DIGEST_PARTS, JSON.stringify(all)); }
+const fsPartsClear = code => { const all = fsPartsAll(); delete all[code]; lsSet(LS_FS_DIGEST_PARTS, JSON.stringify(all)); };
+const fsPartSig = ch => `${ch.names.join('|')}#${ch.text.length}#${ch.docs.length}`;
 const fsDigest = code => Store.get('digest', code);
 const fsDigestInfo = d => `${new Date(d.at).toLocaleDateString(LOCALE)} · ${d.n || 0} מקורות · כ-${fsK(Math.round(d.text.length / 2.5))} טוקנים`;
 const fsDigestTask = c => `TASK: write the COURSE DIGEST for "${c?.name || ''}" (${c?.code || ''}): one dense reference document from which exam formula sheets will later be written WITHOUT access to these sources. Whatever is not in the digest will not reach the sheet, so be complete on substance and ruthless on fluff.
@@ -1165,7 +1175,7 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
   const used = { in: 0, out: 0, read: 0, write: 0, calls: 0 };
   let stage = 'קריאת החומרים';
   const say = (t, name) => { if (name) stage = name; fsDigestRun[code] = String(t).replace(/<[^>]+>/g, ''); toast(`📚 תקציר ${c?.name || code}: ${fsDigestRun[code]}`); fsDigestRefresh(code); };
-  delete fsDigestErr[code];
+  delete fsDigestErr[code]; fsDigestErrSave();
   say('קורא את החומרים…');
   if (currentView === 'formula' && !fsOpenId) render();
   try {
@@ -1175,35 +1185,50 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
     // split into parts that are digested at the same time, and the parts are joined in order.
     const chunks = fsDigestChunks(src.items);
     const total = chunks.reduce((s, ch) => s + ch.weight, 0) || 1;
-    const outs = new Array(chunks.length), failed = [];
-    let ready = 0;
-    const progress = () => say(`Claude מזקק ${src.count} מקורות ב-${chunks.length} חלקים במקביל · ${ready}/${chunks.length} מוכנים`, 'הזיקוק ב-Claude');
+    const outs = new Array(chunks.length), failed = [], saved = fsPartsAll()[code] || {};
+    let ready = 0, waiting = '';
+    chunks.forEach((ch, i) => { if (saved[fsPartSig(ch)]) { outs[i] = saved[fsPartSig(ch)]; ready++; } });
+    const reused = ready;
+    const progress = () => say(`Claude מזקק ${src.count} מקורות ב-${chunks.length} חלקים · ${ready}/${chunks.length} מוכנים${reused ? ` (${reused} מהניסיון הקודם)` : ''}${waiting}`, 'הזיקוק ב-Claude');
     progress();
-    const queue = chunks.map((ch, i) => i);
-    await Promise.all(Array.from({ length: Math.min(6, chunks.length) }, async () => {
+    const queue = chunks.map((ch, i) => i).filter(i => !outs[i]);
+    // Three at a time: a new API account may read only so many tokens a minute ("rate limit"),
+    // and scanned pages are heavy. A request turned away for that waits as long as the API says.
+    let rated = false;
+    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, async () => {
       for (let i; (i = queue.shift()) !== undefined;) {
         const ch = chunks[i], room = Math.max(1500, Math.round(15000 * ch.weight / total));
         for (let attempt = 1; ; attempt++) {
           try {
             outs[i] = (await fsAiText([...ch.docs, { type: 'text', text: fsDigestPartAsk(c, i, chunks.length, ch, room) }], { maxTokens: 32000, effort: 'medium', onUsage: u => fsAddUsage(used, u) })).trim();
+            fsPartsPut(code, fsPartSig(ch), outs[i]);
             break;
           } catch (e) {
-            if (attempt >= 2 || e?.status === 401 || e?.status === 403 || /credit balance/i.test(String(e?.message))) { failed.push({ i, e }); break; }
-            await new Promise(r => setTimeout(r, e?.status === 429 || e?.status === 529 ? 30000 : 3000));
+            const busy = e?.status === 429 || e?.status === 529;
+            if (busy) rated = true;
+            if (attempt >= (busy ? 5 : 2) || e?.status === 401 || e?.status === 403 || /credit balance/i.test(String(e?.message))) { failed.push({ i, e }); break; }
+            const wait = busy ? Math.min(120, Math.max(20, +(e?.headers?.get?.('retry-after') || e?.headers?.['retry-after'] || 0) || 30 * attempt)) : 3;
+            waiting = ` · ממתין ${wait} שנ׳ (${busy ? 'מגבלת קצב של Anthropic' : 'תקלה זמנית'})`; progress();
+            await new Promise(r => setTimeout(r, wait * 1000));
+            waiting = ''; progress();
           }
         }
         ready++; progress();
       }
     }));
-    if (failed.length > chunks.length / 2) throw failed[0].e;
+    // A part missing means material missing from every sheet later, so it is not saved half-done:
+    // the parts that were written are kept, and "try again" sends only the missing ones.
+    if (failed.length) throw Object.assign(failed[0].e instanceof Error ? failed[0].e : new Error(String(failed[0].e)), { fsRate: rated, fsKept: ready - failed.length });
     const text = outs.map((t, i) => (t ? `<!-- חלק ${i + 1}: ${chunks[i].names.join(', ')} -->\n${t}` : '')).filter(Boolean).join('\n\n');
     if (text.length < 500) throw new Error('התקציר שחזר קצר מדי. נסה שוב.');
     if (failed.length) src.left.push(...failed.flatMap(f => chunks[f.i].names));
     Store.put('digest', code, { text, at: Date.now(), n: src.count, ai: used });
+    fsPartsClear(code);
     toast(`📚 התקציר של ${c?.name || code} מוכן · ${fsUsageText(used).split(' (')[0]}${src.left.length ? ` · לא נקראו: ${src.left.join(', ')}` : ''} · עכשיו אפשר ליצור ממנו נוסחאון`);
   } catch (e) {
     console.error('course digest failed at', stage, e);
-    fsDigestErr[code] = { msg: aiError(e).text, stage, at: Date.now(), used: used.calls ? { ...used } : null };
+    fsDigestErr[code] = { msg: aiError(e).text, stage, at: Date.now(), used: used.calls ? { ...used } : null, rate: !!e?.fsRate || e?.status === 429, kept: e?.fsKept || 0 };
+    fsDigestErrSave();
     toast(`הכנת התקציר נכשלה בשלב "${stage}": ${aiError(e).text}`);
   } finally {
     delete fsDigestRun[code];
@@ -1219,6 +1244,7 @@ function fsActivityHtml() {
   const rows = [], name = code => esc(courseByCode(code)?.name || code);
   const plain = h => esc(String(h || '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim());
   for (const [code, text] of Object.entries(fsDigestRun)) rows.push(`<li data-act-digest="${esc(code)}"><b>📚 תקציר ${name(code)}</b><small>⚡ ${plain(text)}</small></li>`);
+  for (const [code, err] of Object.entries(fsDigestErr)) if (!fsDigestRun[code]) rows.push(`<li data-act-digest="${esc(code)}" class="bad"><b>📚 תקציר ${name(code)}</b><small>⚠️ נכשל (${fsHm(err.at)}): ${esc(err.msg)}${err.kept ? ` · ${err.kept} חלקים נשמרו` : ''}</small></li>`);
   for (const [key, job] of Object.entries(fsJobs())) {
     const [type, id] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
     const eta = job.error ? null : fsJobEta(job);
@@ -1280,7 +1306,8 @@ function fsDigestDialog(code0) {
     const draw = () => {
       const code = sel.value, d = fsDigest(code), box = $('#fsDigestState', form);
       const err = fsDigestErr[code];
-      box.innerHTML = (err ? `<p class="bad small">⚠️ הניסיון האחרון (${new Date(err.at).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' })}) נכשל בשלב "${esc(err.stage)}": ${esc(err.msg)}${err.used ? ` · נוצל ${esc(fsUsageText(err.used).split(' (')[0])}` : ''}</p>` : '')
+      box.innerHTML = (err ? `<p class="bad small">⚠️ הניסיון האחרון (${new Date(err.at).toLocaleString(LOCALE, { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })}) נכשל בשלב "${esc(err.stage)}": ${esc(err.msg)}${err.used ? ` · נוצל ${esc(fsUsageText(err.used).split(' (')[0])}` : ''}</p>
+          <p class="small">💡 ${err.kept ? `${err.kept} חלקים שכבר נכתבו נשמרו: ניסיון חוזר עם אותם קבצים ישלח רק את החסרים. ` : ''}${err.rate ? 'הסיבה: מגבלת קצב של חשבון ה-API (כמה טוקנים מותר לשלוח בדקה). מומלץ <b>💰 חסכוני</b>: התור לא מוגבל כך, חצי מחיר, וממשיך גם אם סוגרים את האפליקציה. או: פחות קבצים סרוקים.' : 'אפשר לנסות שוב, או לבחור <b>💰 חסכוני</b> (ממשיך גם אם סוגרים את האפליקציה).'}</p>` : '')
         + (fsJob('digest:' + code) ? (fsJob('digest:' + code).error ? `<p class="bad small">⚠️ התקציר החסכוני נעצר: ${esc(fsJob('digest:' + code).error)} <button type="button" class="btn small" data-djob-clear="${esc(code)}">הסר</button></p>` : `<p class="small">⏳ <b>בתור החסכוני</b> · התחיל ב-${fsHm(fsJob('digest:' + code).at)} · מוכן בערך ב-<b>${fsJobEta(fsJob('digest:' + code)).at}</b> (בעוד כ-${fsJobEta(fsJob('digest:' + code)).min} דק׳). אפשר לסגור את החלון; תקבל התראה. <button type="button" class="btn small" data-djob-cancel="${esc(code)}">✖ בטל</button></p>`) : '')
         + (fsDigestRun[code] ? `<p class="muted small">📚 בהכנה כרגע: ${esc(fsDigestRun[code])}</p>`
         : d ? `<p class="small"><b class="ok">✓ יש תקציר</b> · ${esc(fsDigestInfo(d))}${d.ai ? ` · עלה ${esc(fsUsageText(d.ai).split(' (')[0])}` : ''}. הכנה מחדש תחליף אותו.</p>
@@ -1514,6 +1541,7 @@ async function fsBatchAdvance(key, job, res) {
     const text = parts.filter(Boolean).join('\n\n');
     Store.put('digest', job.code, { text, at: Date.now(), n: job.count, ai: job.used });
     fsJobPut(key, null);
+    delete fsDigestErr[job.code]; fsDigestErrSave(); fsPartsClear(job.code);
     const c = courseByCode(job.code);
     fsNotify(`📚 התקציר של ${c?.name || job.code} מוכן`, `${fsUsageText(job.used).split(' (')[0]}${failed.length ? ` · ${failed.length} חלקים חסרים` : ''}. עכשיו אפשר ליצור ממנו נוסחאון.`);
     return;
