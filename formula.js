@@ -1136,9 +1136,11 @@ const fsDigestErrSave = () => lsSet(LS_FS_DIGEST_ERR, JSON.stringify(fsDigestErr
 const fsPartsAll = () => { try { return JSON.parse(lsGet(LS_FS_DIGEST_PARTS, '{}')) || {}; } catch { return {}; } };
 function fsPartsPut(code, sig, text) { const all = fsPartsAll(); all[code] = { ...(all[code] || {}), [sig]: text }; if (!text) delete all[code][sig]; lsSet(LS_FS_DIGEST_PARTS, JSON.stringify(all)); }
 const fsPartsClear = code => { const all = fsPartsAll(); delete all[code]; lsSet(LS_FS_DIGEST_PARTS, JSON.stringify(all)); };
+// The API's own words for a failure (status and message), shown under the friendly explanation.
+const fsErrDetail = e => [e?.status, String(e?.error?.error?.message || e?.error?.message || e?.message || e || '').slice(0, 240)].filter(Boolean).join(' · ');
 const fsPartSig = ch => `${ch.names.join('|')}#${ch.text.length}#${ch.docs.length}`;
 const fsDigest = code => Store.get('digest', code);
-const fsDigestInfo = d => `${new Date(d.at).toLocaleDateString(LOCALE)} · ${d.n || 0} מקורות · כ-${fsK(Math.round(d.text.length / 2.5))} טוקנים`;
+const fsDigestInfo = d => `${new Date(d.at).toLocaleDateString(LOCALE)} · ${d.manual ? 'הודבק מ-Claude.ai' : `${d.n || 0} מקורות`} · כ-${fsK(Math.round(d.text.length / 2.5))} טוקנים`;
 const fsDigestTask = c => `TASK: write the COURSE DIGEST for "${c?.name || ''}" (${c?.code || ''}): one dense reference document from which exam formula sheets will later be written WITHOUT access to these sources. Whatever is not in the digest will not reach the sheet, so be complete on substance and ruthless on fluff.
 Include, in the course's order of topics:
 1. Syllabus: the list of topics (and anything the sources say is not examined).
@@ -1227,7 +1229,7 @@ async function fsMakeDigest(code, files, usePangea, useDrive) {
     toast(`📚 התקציר של ${c?.name || code} מוכן · ${fsUsageText(used).split(' (')[0]}${src.left.length ? ` · לא נקראו: ${src.left.join(', ')}` : ''} · עכשיו אפשר ליצור ממנו נוסחאון`);
   } catch (e) {
     console.error('course digest failed at', stage, e);
-    fsDigestErr[code] = { msg: aiError(e).text, stage, at: Date.now(), used: used.calls ? { ...used } : null, rate: !!e?.fsRate || e?.status === 429, kept: e?.fsKept || 0 };
+    fsDigestErr[code] = { msg: aiError(e).text, stage, at: Date.now(), detail: fsErrDetail(e), used: used.calls ? { ...used } : null, rate: !!e?.fsRate || e?.status === 429, kept: e?.fsKept || 0 };
     fsDigestErrSave();
     toast(`הכנת התקציר נכשלה בשלב "${stage}": ${aiError(e).text}`);
   } finally {
@@ -1294,6 +1296,16 @@ function fsDigestDialog(code0) {
       ${active.length ? `<optgroup label="בלימוד">${active.map(opt).join('')}</optgroup>` : ''}
       <optgroup label="כל הקורסים">${list.filter(c => c.status !== 'active').map(opt).join('')}</optgroup></select></label>
     <div id="fsDigestState"></div>
+    <details class="set-sub" id="fsDigestManual"><summary>✍️ דרך נוספת, בלי עלות API: להכין את התקציר ב-Claude.ai</summary>
+      <ol class="small">
+        <li>לחץ "העתק הנחיה", פתח שיחה חדשה ב-<a href="https://claude.ai/new" target="_blank" rel="noopener">claude.ai</a>, צרף את קבצי הקורס (PDF, עדיף מוקלדים) והדבק את ההנחיה.</li>
+        <li>העתק את התשובה המלאה של Claude והדבק אותה כאן, ואז "שמור כתקציר הקורס".</li>
+      </ol>
+      <p class="muted small">משתמש במנוי Claude שלך ולא במפתח ה-API. מתאים לקורס עם הרבה קבצים סרוקים או כשהחשבון מגיע למגבלת קצב.</p>
+      <div class="row wrap"><button type="button" class="btn small" id="fsDigestCopy">📋 העתק הנחיה</button></div>
+      <textarea id="fsDigestPaste" rows="6" style="width:100%" placeholder="הדבק כאן את התקציר שקיבלת מ-Claude"></textarea>
+      <div class="row wrap"><button type="button" class="btn small primary" id="fsDigestPasteSave">💾 שמור כתקציר הקורס</button></div>
+    </details>
     <div class="field"><span class="field-label">📂 חומרים לתקציר. קבצי PDF נקראים במכשיר בלבד.</span>${fsSourcesHtml(false)}</div>
     ${fsModeHtml('digest')}
     ${hasKey ? '' : '<p class="bad small">צריך מפתח API של Anthropic (בלשונית קו״ח ← הגדרות AI).</p>'}
@@ -1303,11 +1315,26 @@ function fsDigestDialog(code0) {
     (fsWantsBatch(fd) ? fsBatchStartDigest : fsMakeDigest)(String(fd.get('course')), fsReadSources(fd), !!fd.get('pangea'), !!fd.get('cdrive'));
   }, form => {
     const sel = $('#fsCourse', form);
+    $('#fsDigestCopy', form).onclick = async () => {
+      const c = courseByCode(sel.value);
+      await navigator.clipboard.writeText(`${fsDigestTask(c)}\n\nSOURCES: the course files attached to this message. Read all of them.\n\n${FS_TEXT_TAIL}`);
+      toast('ההנחיה הועתקה. הדבק אותה ב-claude.ai יחד עם קבצי הקורס.');
+    };
+    $('#fsDigestPasteSave', form).onclick = () => {
+      const text = $('#fsDigestPaste', form).value.trim();
+      if (text.length < 500) return toast('התקציר קצר מדי. הדבק את כל התשובה של Claude.');
+      Store.put('digest', sel.value, { text, at: Date.now(), n: 0, manual: true });
+      delete fsDigestErr[sel.value]; fsDigestErrSave(); fsPartsClear(sel.value);
+      $('#fsDigestPaste', form).value = '';
+      toast('📚 התקציר נשמר. עכשיו אפשר ליצור ממנו נוסחאון.');
+      sel.dispatchEvent(new Event('change')); fsActivityRefresh();
+    };
     const draw = () => {
       const code = sel.value, d = fsDigest(code), box = $('#fsDigestState', form);
       const err = fsDigestErr[code];
       box.innerHTML = (err ? `<p class="bad small">⚠️ הניסיון האחרון (${new Date(err.at).toLocaleString(LOCALE, { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' })}) נכשל בשלב "${esc(err.stage)}": ${esc(err.msg)}${err.used ? ` · נוצל ${esc(fsUsageText(err.used).split(' (')[0])}` : ''}</p>
-          <p class="small">💡 ${err.kept ? `${err.kept} חלקים שכבר נכתבו נשמרו: ניסיון חוזר עם אותם קבצים ישלח רק את החסרים. ` : ''}${err.rate ? 'הסיבה: מגבלת קצב של חשבון ה-API (כמה טוקנים מותר לשלוח בדקה). מומלץ <b>💰 חסכוני</b>: התור לא מוגבל כך, חצי מחיר, וממשיך גם אם סוגרים את האפליקציה. או: פחות קבצים סרוקים.' : 'אפשר לנסות שוב, או לבחור <b>💰 חסכוני</b> (ממשיך גם אם סוגרים את האפליקציה).'}</p>` : '')
+          ${err.detail ? `<p class="muted small" dir="ltr" style="text-align:left">${esc(err.detail)}</p>` : ''}
+          <p class="small">💡 ${err.kept ? `${err.kept} חלקים שכבר נכתבו נשמרו: ניסיון חוזר עם אותם קבצים ישלח רק את החסרים. ` : ''}${err.rate ? 'הסיבה: מגבלת קצב של חשבון ה-API (כמה טוקנים מותר לשלוח בדקה). מומלץ <b>💰 חסכוני</b>: התור לא מוגבל כך, חצי מחיר, וממשיך גם אם סוגרים את האפליקציה. או: פחות קבצים סרוקים.' : (err.batch ? 'אם זה חוזר, אפשר להכין את התקציר בלי ה-API: "✍️ דרך נוספת" למטה.' : 'אפשר לנסות שוב, או לבחור <b>💰 חסכוני</b> (ממשיך גם אם סוגרים את האפליקציה).')}</p>` : '')
         + (fsJob('digest:' + code) ? (fsJob('digest:' + code).error ? `<p class="bad small">⚠️ התקציר החסכוני נעצר: ${esc(fsJob('digest:' + code).error)} <button type="button" class="btn small" data-djob-clear="${esc(code)}">הסר</button></p>` : `<p class="small">⏳ <b>בתור החסכוני</b> · התחיל ב-${fsHm(fsJob('digest:' + code).at)} · מוכן בערך ב-<b>${fsJobEta(fsJob('digest:' + code)).at}</b> (בעוד כ-${fsJobEta(fsJob('digest:' + code)).min} דק׳). אפשר לסגור את החלון; תקבל התראה. <button type="button" class="btn small" data-djob-cancel="${esc(code)}">✖ בטל</button></p>`) : '')
         + (fsDigestRun[code] ? `<p class="muted small">📚 בהכנה כרגע: ${esc(fsDigestRun[code])}</p>`
         : d ? `<p class="small"><b class="ok">✓ יש תקציר</b> · ${esc(fsDigestInfo(d))}${d.ai ? ` · עלה ${esc(fsUsageText(d.ai).split(' (')[0])}` : ''}. הכנה מחדש תחליף אותו.</p>
@@ -1485,9 +1512,13 @@ async function fsBatchStartDigest(code, files, usePangea, useDrive) {
   const key = 'digest:' + code, c = courseByCode(code);
   if (fsJob(key) && !fsJob(key).error) return toast('התקציר של הקורס הזה כבר בתור החסכוני');
   fsAskNotify();
+  let stage = 'קריאת החומרים';
+  delete fsDigestErr[code]; fsDigestErrSave();
   fsDigestRun[code] = 'קורא את החומרים…'; fsDigestRefresh(code);
   try {
     const src = await fsReadMaterials({ course: code }, files, usePangea, useDrive, t => { fsDigestRun[code] = String(t).replace(/<[^>]+>/g, ''); fsDigestRefresh(code); }, '');
+    stage = 'שליחה לתור החסכוני';
+    fsDigestRun[code] = `שולח ${src.count} מקורות לתור…`; fsDigestRefresh(code);
     if (!src.count) throw new Error('לא נבחרו חומרים (או שאף קובץ לא נקרא), ואין ממה להכין תקציר.');
     const chunks = fsDigestChunks(src.items);
     const total = chunks.reduce((s, ch) => s + ch.weight, 0) || 1;
@@ -1495,7 +1526,12 @@ async function fsBatchStartDigest(code, files, usePangea, useDrive) {
     await fsBatchSubmit(key, { type: 'digest', code, stage: 'digest', t0: Date.now(), used, names: chunks.map(ch => ch.names), count: src.count, left: src.left },
       chunks.map((ch, i) => fsBatchReq('p' + i, [...ch.docs, { type: 'text', text: fsDigestPartAsk(c, i, chunks.length, ch, Math.max(1500, Math.round(15000 * ch.weight / total))) }], FS_TEXT_TAIL, 32000, 'medium')));
     toast(`💰 התקציר של ${c?.name || code} נשלח לתור החסכוני (${chunks.length} חלקים). תקבל התראה כשמוכן.`);
-  } catch (e) { console.error(e); toast(`הכנת התקציר נכשלה: ${aiError(e).text}`); }
+  } catch (e) {
+    console.error('economy digest failed at', stage, e);
+    fsDigestErr[code] = { msg: aiError(e).text, stage, at: Date.now(), detail: fsErrDetail(e), rate: e?.status === 429, batch: true };
+    fsDigestErrSave();
+    toast(`הכנת התקציר נכשלה בשלב "${stage}": ${aiError(e).text}`);
+  }
   finally { delete fsDigestRun[code]; fsDigestRefresh(code); }
 }
 
