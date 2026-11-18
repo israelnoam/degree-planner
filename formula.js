@@ -1263,7 +1263,7 @@ function fsActivityHtml() {
     const eta = job.error ? null : fsJobEta(job);
     const stage = job.type === 'sheet' ? ` · שלב ${FS_STAGES[job.stage]?.[1] || 1}/3` : '';
     const what = type === 'digest' ? `📚 תקציר ${name(id)}` : `📐 ${esc(Store.get('sheet', id)?.title || 'נוסחאון')}`;
-    rows.push(`<li ${type === 'digest' ? `data-act-digest="${esc(id)}"` : `data-act-sheet="${esc(id)}"`} class="${job.error ? 'bad' : ''}"><b>${what}</b><small>${job.error ? `⚠️ נעצר: ${esc(job.error)}` : `💰 בתור החסכוני${stage} · מוכן בערך ב-${eta.at} (עוד ~${eta.min} דק׳)`}</small></li>`);
+    rows.push(`<li ${type === 'digest' ? `data-act-digest="${esc(id)}"` : `data-act-sheet="${esc(id)}"`} class="${job.error ? 'bad' : ''}"><b>${what}</b><small>${job.error ? `⚠️ נעצר: ${esc(job.error)}` : `💰 בתור החסכוני${stage} · מוכן בערך ב-${eta.at} (עוד ~${eta.min} דק׳)${fsDirectRun[key] ? ` · ✍️ ${fsDirectRun[key]} חלקים כבדים נכתבים עכשיו ישירות (השאר את האפליקציה פתוחה)` : ''}`}</small></li>`);
   }
   for (const [id, g] of Object.entries(fsGen)) {
     const s = Store.get('sheet', id);
@@ -1496,8 +1496,52 @@ function fsNotify(title, body) {
   try { if (window.Notification && Notification.permission === 'granted' && document.visibilityState !== 'visible') new Notification(title, { body, icon: 'icons/icon-192.png', tag: 'fs-batch' }); } catch {}
 }
 
+// Anthropic doesn't let a browser call the batch API directly (no CORS): the calls go through this
+// app's own relay on Vercel (api/anthropic-batch.js), which passes them on with your key.
+async function fsBatchClient() {
+  const key = claudeKey();
+  if (!key) throw new Error('צריך מפתח API של Anthropic (בלשונית "הגדרות AI")');
+  const { default: Anthropic } = await import(ANTHROPIC_SDK_URL);
+  return new Anthropic({ apiKey: key, dangerouslyAllowBrowser: true, fetch: (url, init) => {
+    const u = new URL(String(url?.url || url));
+    return fetch(`/api/anthropic-batch?p=${encodeURIComponent(u.pathname + u.search)}`, init);
+  } });
+}
+// The relay takes at most 4.5MB a request, so a batch is kept under 4MB.
+const FS_BATCH_MAX = 4e6;
+const fsReqSize = r => JSON.stringify(r).length;
+
 // ---- starting ----
 const fsBatchMem = {}; // job key → its requests by id, kept in memory to resend failed ones
+// Parts of an economy digest too big for the queue: written now (3 at a time), saved like the others.
+const fsDirectRun = {}; // job key → how many direct parts are still being written
+async function fsDigestDirect(key, job, list) {
+  const c = courseByCode(job.code), used = { in: 0, out: 0, read: 0, write: 0, calls: 0, usd: 0 };
+  let left = list.length;
+  fsDirectRun[key] = left; fsActivityRefresh();
+  const queue = [...list];
+  await Promise.all(Array.from({ length: Math.min(3, queue.length) }, async () => {
+    for (let p; (p = queue.shift());) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const t = (await fsAiText([...p.ch.docs, { type: 'text', text: fsDigestPartAsk(c, p.i, job.names.length, p.ch, p.room) }], { maxTokens: 32000, effort: 'medium', model: FS_DIGEST_MODEL, onUsage: (u, m) => fsAddUsage(used, u, m) })).trim();
+          if (t) fsPartsPut(job.code, job.sigs[p.i], t);
+          break;
+        } catch (e) {
+          console.warn('direct digest part', p.i, e);
+          if (attempt === 3 || [400, 401, 403, 413].includes(e?.status)) break;
+          await new Promise(r => setTimeout(r, e?.status === 429 || e?.status === 529 ? 30000 * attempt : 3000));
+        }
+      }
+      fsDirectRun[key] = --left; fsActivityRefresh();
+    }
+  }));
+  // Their cost joins the job's (at the full price: they didn't go through the queue).
+  const cur = fsJob(key);
+  if (cur) fsJobPut(key, { ...cur, used: { ...cur.used, in: cur.used.in + used.in, out: cur.used.out + used.out, read: cur.used.read + used.read, write: cur.used.write + used.write, calls: (cur.used.calls || 0) + used.calls, usd: fsUsd(cur.used) + used.usd } });
+  delete fsDirectRun[key];
+  fsBatchSchedule(1000); // the queue part may have ended meanwhile
+}
 // Joins the saved parts of a digest (in order) into the course digest.
 function fsDigestSave(job) {
   const saved = fsPartsAll()[job.code] || {};
@@ -1507,9 +1551,11 @@ function fsDigestSave(job) {
   fsDigestRefresh(job.code);
 }
 async function fsBatchSubmit(key, job, requests) {
-  const client = await claudeClient();
+  const size = requests.reduce((s, r) => s + fsReqSize(r), 0);
+  if (size > FS_BATCH_MAX) throw new Error(`הבקשה לתור גדולה מדי (${(size / 1e6).toFixed(1)}MB, המקסימום 4MB). בחר ⚡ מהיר, או קצר את תקציר הקורס.`);
+  const client = await fsBatchClient();
   const b = await client.messages.batches.create({ requests });
-  fsJobPut(key, { ...job, batchId: b.id, at: Date.now(), counts: null, error: '', fails: 0 });
+  fsJobPut(key, { ...job, batchId: b.id, at: Date.now(), counts: null, error: '', fails: 0, waiting: false });
   fsBatchSchedule(5000);
   fsBatchRedraw(key);
 }
@@ -1550,10 +1596,17 @@ async function fsBatchStartDigest(code, files, usePangea, useDrive) {
     const todo = chunks.map((ch, i) => i).filter(i => !saved[job.sigs[i]]);
     if (!todo.length) { fsDigestSave(job); toast(`📚 התקציר של ${c?.name || code} הורכב מהחלקים שכבר נכתבו, בלי עלות נוספת.`); return; }
     const reqs = todo.map(i => fsBatchReq('p' + i, [...chunks[i].docs, { type: 'text', text: fsDigestPartAsk(c, i, chunks.length, chunks[i], Math.max(1500, Math.round(15000 * chunks[i].weight / total))) }], FS_TEXT_TAIL, 32000, 'medium', FS_DIGEST_MODEL));
-    fsBatchMem[key] = Object.fromEntries(reqs.map(r => [r.custom_id, r])); // for one retry of failed parts (while the app stays open)
-    await fsBatchSubmit(key, job, reqs);
+    // The queue takes up to 4MB a batch (the relay's limit). Parts that don't fit (big scans) are
+    // written right away instead, at the full price, while the rest wait in the queue.
+    const queued = [], direct = [];
+    let room = FS_BATCH_MAX;
+    reqs.forEach((r, j) => { const n = fsReqSize(r); if (n <= room) { queued.push(r); room -= n; } else direct.push(todo[j]); });
+    if (!queued.length) { delete fsDigestRun[code]; toast('כל החלקים גדולים מדי לתור החסכוני (סריקות כבדות): מכין במצב ⚡ מהיר.'); return await fsMakeDigest(code, files, usePangea, useDrive); }
+    fsBatchMem[key] = Object.fromEntries(queued.map(r => [r.custom_id, r])); // for one retry of failed parts (while the app stays open)
+    await fsBatchSubmit(key, job, queued);
+    if (direct.length) fsDigestDirect(key, job, direct.map(i => ({ i, ch: chunks[i], room: Math.max(1500, Math.round(15000 * chunks[i].weight / total)) })));
     const reused = chunks.length - todo.length;
-    toast(`💰 התקציר של ${c?.name || code} נשלח לתור החסכוני (${todo.length} חלקים${reused ? `; ${reused} נלקחו מהניסיון הקודם` : ''})${fsTwinsNote(src.twins)}. תקבל התראה כשמוכן.`);
+    toast(`💰 התקציר של ${c?.name || code} נשלח לתור החסכוני (${queued.length} חלקים${reused ? `; ${reused} נלקחו מהניסיון הקודם` : ''})${direct.length ? `. ${direct.length} חלקים עם סריקות כבדות נכתבים עכשיו ישירות: השאר את האפליקציה פתוחה כמה דקות` : ''}${fsTwinsNote(src.twins)}. תקבל התראה כשמוכן.`);
   } catch (e) {
     console.error('economy digest failed at', stage, e);
     fsDigestErr[code] = { msg: aiError(e).text, stage, at: Date.now(), detail: fsErrDetail(e), rate: e?.status === 429, batch: true };
@@ -1573,7 +1626,7 @@ async function fsBatchPoll() {
     for (const [key, job] of Object.entries(fsJobs())) {
       if (job.error || !job.batchId) continue;
       try {
-        const client = await claudeClient();
+        const client = await fsBatchClient();
         const b = await client.messages.batches.retrieve(job.batchId);
         if (b.processing_status !== 'ended') { fsJobPut(key, { ...job, counts: b.request_counts, checked: Date.now() }); fsBatchRedraw(key); continue; }
         const res = {};
@@ -1585,7 +1638,7 @@ async function fsBatchPoll() {
             res[r.custom_id] = m.stop_reason === 'refusal' ? { error: 'הבקשה נדחתה' } : m.stop_reason === 'max_tokens' ? { text, cut: true, error: 'התשובה נחתכה' } : { text };
           } else res[r.custom_id] = { error: r.result?.type === 'expired' ? 'פג הזמן בתור' : r.result?.type === 'canceled' ? 'בוטל' : (r.result?.error?.error?.message || r.result?.error?.type || 'שגיאה') };
         }
-        if (!job.fails) fsStageDone(job.stage, Date.now() - job.at); // once a stage, so retries don't skew the estimate
+        if (!job.fails && !job.waiting) fsStageDone(job.stage, Date.now() - job.at); // once a stage, so retries don't skew the estimate
         try { await fsBatchAdvance(key, job, res); }
         catch (e) {
           // Sending the next stage failed. Without this the job stayed "in the queue" for ever, retried
@@ -1610,6 +1663,10 @@ async function fsBatchAdvance(key, job, res) {
   if (job.type === 'digest' && job.sigs) {
     // Every part that came back is saved at once (by its files), so nothing paid for is lost.
     for (const [cid, r] of Object.entries(res)) if (r.text?.trim()) fsPartsPut(job.code, job.sigs[+cid.slice(1)], r.text.trim() + (r.cut ? '\n\n<!-- החלק נחתך כאן (ארוך מדי) -->' : ''));
+    if (fsDirectRun[key] != null) { // the big parts are still being written here: wait for them
+      if (!fsJob(key)?.waiting) fsJobPut(key, { ...fsJob(key), waiting: true });
+      return;
+    }
     const saved = fsPartsAll()[job.code] || {}, c = courseByCode(job.code);
     const missing = job.names.map((n, i) => i).filter(i => !saved[job.sigs[i]]);
     const mem = fsBatchMem[key];
@@ -1686,7 +1743,7 @@ async function fsBatchAdvance(key, job, res) {
 async function fsBatchCancel(key) {
   const job = fsJob(key);
   if (!job || !confirm('לבטל את היצירה החסכונית? מה שכבר חויב לא יוחזר.')) return;
-  try { if (!job.error) await (await claudeClient()).messages.batches.cancel(job.batchId); } catch (e) { console.warn(e); }
+  try { if (!job.error) await (await fsBatchClient()).messages.batches.cancel(job.batchId); } catch (e) { console.warn(e); }
   fsJobPut(key, null);
   fsBatchRedraw(key);
 }
