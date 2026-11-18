@@ -40,13 +40,29 @@ function allToolLinks() {
   return base.concat(customLinks().map(l => ({ id: 'my:' + l.id, rid: l.id, group: 'mine', title: l.title, desc: l.desc || '', url: l.url, emoji: l.emoji || '🔗', color: '#64748b' })));
 }
 
-// My learning app: the live site, and its source folder on the PC. A web page can't open a
+// My own web apps: the live site, and its source folder on the PC. A web page can't open a
 // local folder (browsers block file:// links), so the folder opens in VS Code or by its copied path.
-const LEARNING_APP = {
-  url: 'https://noam-learning-app.israelnoam2001.workers.dev/',
-  folder: 'C:\\Users\\israe\\learning-app',
-  vscode: 'vscode://file/C:/Users/israe/learning-app',
-};
+const MY_APPS = [
+  { id: 'learning-app', title: 'אפליקציית הלמידה שלי', url: 'https://noam-learning-app.israelnoam2001.workers.dev/',
+    folder: 'C:\\Users\\israe\\learning-app', vscode: 'vscode://file/C:/Users/israe/learning-app',
+    logo: 'icons/logos/learning-app.svg', color: '#7c3aed' },
+  { id: 'learning-helper', title: 'Learning Helper · מכניקת מוצקים 2מ', url: 'https://solids2-visual-lessons.vercel.app/',
+    folder: 'C:\\Users\\israe\\Learning Helper', vscode: 'vscode://file/C:/Users/israe/Learning%20Helper',
+    logo: 'icons/logos/learning-helper.svg', color: '#2456c9' },
+];
+
+function myAppCard(a) {
+  return `<div class="tl-card tl-app" style="--brand:${a.color}">
+          <a class="tl-main" href="${esc(a.url)}" target="_blank" rel="noopener">
+            <span class="tl-logo has-img" style="--brand:${a.color}"><img src="${esc(a.logo)}" alt=""></span>
+            <span class="tl-text"><b>${esc(a.title)}</b><small>נפתחת בלשונית חדשה. התיקייה במחשב: <span dir="ltr" translate="no">${esc(a.folder)}</span></small></span>
+          </a>
+          <div class="tl-app-acts">
+            <a class="btn small" href="${esc(a.vscode)}" title="פותח את תיקיית הפרויקט ב-VS Code (במחשב הזה)">💻 VS Code</a>
+            <button class="btn small" type="button" data-copypath="${esc(a.id)}" title="מעתיק את נתיב התיקייה, להדבקה בסייר הקבצים">📁 העתק נתיב</button>
+          </div>
+        </div>`;
+}
 
 function toolLogo(l) {
   // The site's own icon is the most recognisable; the emoji tile shows if it can't load.
@@ -115,16 +131,7 @@ function renderTools(root) {
           <span class="tl-main"><span class="tl-logo" style="--brand:#0f766e"><span class="tl-emoji">📄</span></span>
           <span class="tl-text"><b>מחולל קורות חיים</b><small>פרופיל אחד וגרסה מותאמת לכל משרה, עם AI. ייבוא קו״ח קיים והשכלה מהתואר.</small></span></span>
         </button>
-        <div class="tl-card tl-app" style="--brand:#7c3aed">
-          <a class="tl-main" href="${LEARNING_APP.url}" target="_blank" rel="noopener">
-            <span class="tl-logo has-img" style="--brand:#7c3aed"><img src="icons/logos/learning-app.svg" alt=""></span>
-            <span class="tl-text"><b>אפליקציית הלמידה שלי</b><small>נפתחת בלשונית חדשה. התיקייה במחשב: <span dir="ltr" translate="no">${esc(LEARNING_APP.folder)}</span></small></span>
-          </a>
-          <div class="tl-app-acts">
-            <a class="btn small" href="${LEARNING_APP.vscode}" title="פותח את תיקיית הפרויקט ב-VS Code (במחשב הזה)">💻 VS Code</a>
-            <button class="btn small" type="button" id="copyLearnPath" title="מעתיק את נתיב התיקייה, להדבקה בסייר הקבצים">📁 העתק נתיב</button>
-          </div>
-        </div>
+        ${MY_APPS.map(myAppCard).join('')}
       </div>
 
       ${pinned.length ? section('pinned', pinned) : ''}
@@ -144,9 +151,12 @@ function renderTools(root) {
   const search = $('#toolsSearch', root);
   search.oninput = () => { toolsQuery = search.value; const pos = search.selectionStart; render(); const s = $('#toolsSearch'); s.focus(); s.setSelectionRange(pos, pos); };
   $('#toolsAdd', root).onclick = () => editCustomLink();
-  $('#copyLearnPath', root).onclick = () => navigator.clipboard.writeText(LEARNING_APP.folder)
-    .then(() => toast('הנתיב הועתק. הדבק בשורת הכתובת של סייר הקבצים (Win+E)'))
-    .catch(() => prompt('נתיב התיקייה:', LEARNING_APP.folder));
+  $$('[data-copypath]', root).forEach(b => b.onclick = () => {
+    const { folder } = MY_APPS.find(a => a.id === b.dataset.copypath);
+    navigator.clipboard.writeText(folder)
+      .then(() => toast('הנתיב הועתק. הדבק בשורת הכתובת של סייר הקבצים (Win+E)'))
+      .catch(() => prompt('נתיב התיקייה:', folder));
+  });
   if ($('#toolsHidden', root)) $('#toolsHidden', root).onclick = () => { toolsShowHidden = !toolsShowHidden; render(); };
   $$('[data-tpin]', root).forEach(b => b.onclick = () => toggleToolPref('toolsPinned', b.dataset.tpin));
   $$('[data-thide]', root).forEach(b => b.onclick = () => toggleToolPref('toolsHidden', b.dataset.thide));
