@@ -257,8 +257,12 @@ function nbSectionHtml() {
 
   const folders = NB.courseFolders();
   const unlinked = folders.filter(f => !Store.get('nbmap', f.id)).length;
-  const linked = [...new Set(folders.map(f => Store.get('nbmap', f.id)?.course).filter(Boolean))]
-    .map(code => ({ code, name: courseLabel(code), n: NB.countFor(code) })).sort((a, b) => a.name.localeCompare(b.name, 'he'));
+  // Each course under the semester folder it sits in (Notability / <semester> / <course>).
+  const semOf = {};
+  for (const f of folders) { const code = Store.get('nbmap', f.id)?.course; if (code && !(code in semOf)) semOf[code] = f.group || 'אחר'; }
+  const linked = Object.keys(semOf)
+    .map(code => ({ code, name: courseLabel(code), n: NB.countFor(code), sem: semOf[code] })).sort((a, b) => a.name.localeCompare(b.name, 'he'));
+  const sems = [...new Set(linked.map(c => c.sem))].sort((a, b) => a === 'אחר' ? 1 : b === 'אחר' ? -1 : a.localeCompare(b, 'he', { numeric: true }));
   const dupes = NB.duplicates().length;
   const due = nbDue();
   const when = new Date(t.at).toLocaleString(LOCALE, { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -278,7 +282,7 @@ function nbSectionHtml() {
     ${dupes ? `<div class="nb-alert"><span>📑 <b>${dupes}</b> עותקים ישנים של מחברות שנשמרו מחדש. ${NB.canWrite() ? '' : 'כדי להעביר אותם לסל של הדרייב צריך אישור לגישה מלאה לדרייב (פעם אחת).'}</span>
       <button class="btn small primary" type="button" id="nbDupes">${NB.canWrite() ? 'העבר לסל' : '🔓 אשר ונקה'}</button></div>` : ''}
     ${NB.lastCleanup ? `<p class="muted small">🧹 ${NB.lastCleanup} עותקים ישנים הועברו לסל של הדרייב ברענון האחרון.</p>` : ''}
-    ${linked.length ? `<div class="nb-courses">${linked.map(c => `<button type="button" class="btn small" data-nbopen="${esc(c.code)}">📓 ${esc(c.name)} <small>${c.n}</small></button>`).join('')}</div>`
+    ${linked.length ? sems.map(s => `<div class="nb-sem">${sems.length > 1 || s !== 'אחר' ? `<h4>${esc(s)}</h4>` : ''}<div class="nb-courses">${linked.filter(c => c.sem === s).map(c => `<button type="button" class="btn small" data-nbopen="${esc(c.code)}">📓 ${esc(c.name)} <small>${c.n}</small></button>`).join('')}</div></div>`).join('')
       : '<p class="muted">עוד לא שויכו תיקיות לקורסים. לחץ על "שיוך לקורסים": האפליקציה מציעה התאמה לכל תיקייה, ואתה מאשר.</p>'}
   </div>`;
 }

@@ -57,6 +57,15 @@ button.tl-card { cursor: pointer; font: inherit; padding: 0; width: 100%; }
 .tl-courses { display: grid; gap: 8px; }
 .tl-course { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
 .tl-course .link-row { margin: 6px 0 0; }
+/* 📚 study materials: a small menu under its button */
+.tl-menu { position: relative; display: inline-block; }
+.tl-menu > summary { list-style: none; cursor: pointer; }
+.tl-menu > summary::-webkit-details-marker { display: none; }
+.tl-menu[open] > summary { border-color: var(--accent); }
+.tl-menu-list { position: absolute; z-index: 30; top: calc(100% + 4px); inset-inline-start: 0; min-width: 190px; display: grid; gap: 4px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px var(--shadow-soft); }
+.tl-menu-list .btn { width: 100%; justify-content: flex-start; text-align: start; text-decoration: none; }
+.nb-sem { display: grid; gap: 6px; }
+.nb-sem h4 { margin: 4px 0 0; color: var(--muted); font-size: .85rem; }
 .small { font-size: .8rem; }
 
 /* ---------- 📐 formula sheets: app chrome ---------- */
