@@ -166,7 +166,7 @@ function renderTools(root) {
   $$('[data-tedit]', root).forEach(b => b.onclick = () => editCustomLink(b.dataset.tedit));
   $$('[data-pzip]', root).forEach(b => b.onclick = () => pangeaZip(b.dataset.pzip, b));
   bindPanopto(root);
-  $$('[data-syllabus]', root).forEach(b => b.onclick = () => syllabusDialog(b.dataset.syllabus));
+  $$('[data-syllabus]', root).forEach(b => { b.onclick = () => syllabusOpen(b.dataset.syllabus); b.oncontextmenu = e => { e.preventDefault(); syllabusDialog(b.dataset.syllabus); }; });
   // One study-materials menu open at a time (kept open through background redraws);
   // picking an item or clicking elsewhere closes it.
   $$('.tl-menu', root).forEach(d => d.ontoggle = () => {
@@ -244,7 +244,7 @@ function courseToolsRow(c) {
       ${a('<img class="btn-logo" src="icons/logos/moodle.png" alt=""> Moodle', `https://moodle26.technion.ac.il/course/search.php?search=${c8}`)}
       ${panopto}
       ${a('🧀 CheeseFork', `https://cheesefork.cf/course/${c.code}`)}
-      <button type="button" class="btn small" data-syllabus="${esc(c.code)}" title="הסילבוס של הקורס">📖 סילבוס</button>
+      <button type="button" class="btn small" data-syllabus="${esc(c.code)}" title="פותח את קובץ הסילבוס של הקורס (שהעלית, או מתיקיית הדרייב). קליק ימני: העלאה / החלפה">📖 סילבוס</button>
       <details class="tl-menu" data-menu="${esc(c.code)}" ${toolsMenuOpen === c.code ? 'open' : ''}>
         <summary class="btn small">📚 חומרי לימוד ▾</summary>
         <div class="tl-menu-list">${materials.join('')}</div>
@@ -255,25 +255,85 @@ function courseToolsRow(c) {
   </div>`;
 }
 
-// The course's syllabus (as the Technion publishes it, via CheeseFork), with the full catalog page.
+// ---------- the course's own syllabus file ----------
+// Opened from, in this order: a file you uploaded here (kept on this device, in the browser's
+// own storage), then a file in the course's Drive folder whose name has "סילבוס" / "syllabus".
+// When there's neither, the button asks for an upload.
+const SylDB = {
+  db() {
+    this._db ||= new Promise((ok, no) => {
+      const r = indexedDB.open('pp_syllabus', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('f');
+      r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error);
+    });
+    return this._db;
+  },
+  async tx(mode, fn) {
+    const db = await this.db();
+    return new Promise((ok, no) => { const q = fn(db.transaction('f', mode).objectStore('f')); q.onsuccess = () => ok(q.result); q.onerror = () => no(q.error); });
+  },
+  get(code) { return this.tx('readonly', s => s.get(code)); },
+  put(code, rec) { return this.tx('readwrite', s => s.put(rec, code)); },
+  del(code) { return this.tx('readwrite', s => s.delete(code)); },
+};
+const SYL_RE = /סילבוס|syllabus/i;
+function syllabusDriveFile(code) {
+  return (CDrive.entry(code)?.files || []).filter(f => SYL_RE.test(f.name) || SYL_RE.test(f.cat || ''))
+    .sort((a, b) => b.mod.localeCompare(a.mod))[0] || null;
+}
+async function syllabusOpen(code) {
+  const drv = syllabusDriveFile(code);
+  // The window must open inside the click, before any waiting, or the browser blocks it.
+  const win = window.open('about:blank', '_blank');
+  try {
+    const up = await SylDB.get(code);
+    if (up) { if (win) win.location = URL.createObjectURL(up.blob); return; }
+  } catch {}
+  if (drv?.link) { if (win) win.location = drv.link; return; }
+  win?.close();
+  syllabusDialog(code);
+}
+
+// The upload / manage window (also what a right-click on the button opens).
 async function syllabusDialog(code) {
   const c = courseByCode(code);
   if (!c) return;
+  const up = await SylDB.get(code).catch(() => null);
+  const drv = syllabusDriveFile(code);
   const catalog = `https://students.technion.ac.il/local/technionsearch/course/${toCode8(code)}`;
   openModal(`
     <h2>📖 סילבוס · ${esc(c.name)} <small class="muted" dir="ltr">${esc(code)}</small></h2>
-    <div id="sylBody"><p class="muted">טוען את הסילבוס…</p></div>
+    <p class="muted">${up ? `הקובץ שהעלית: <b>${esc(up.name)}</b>. הוא נפתח בלחיצה על הכפתור.`
+      : drv ? `נמצא בתיקיית הדרייב של הקורס: <b>${esc(drv.name)}</b>. הוא נפתח בלחיצה על הכפתור.`
+      : 'לא מצאתי קובץ סילבוס לקורס. העלה אותו כאן' + (c.drive ? ', או שים בתיקיית הדרייב של הקורס קובץ ששמו מכיל "סילבוס".' : ', או קשר לקורס תיקיית Drive עם קובץ ששמו מכיל "סילבוס".')}</p>
+    <label class="field"><span class="field-label">${up ? 'החלף' : 'העלה'} קובץ סילבוס (PDF, תמונה או מסמך)</span>
+      <input type="file" name="file" accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,application/pdf,image/*"></label>
+    <p class="muted small">הקובץ נשמר רק במכשיר הזה.</p>
+    <p class="bad small" id="sylErr"></p>
+    <details><summary>הסילבוס הרשמי (טקסט, מ-CheeseFork)</summary><div id="sylBody"><p class="muted">טוען…</p></div></details>
     <div class="actions">
-      <a class="btn" href="${esc(catalog)}" target="_blank" rel="noopener">🏛️ קטלוג הטכניון ↗</a>
-      <button class="btn primary" value="cancel" formnovalidate>סגור</button>
-    </div>`, () => {});
-  try { await CF.loadRecent(); } catch {}
-  const box = $('#sylBody');
-  if (!box) return;
-  const g = CF.find(code)?.course.general;
-  box.innerHTML = g?.['סילבוס']
-    ? `${g['אחראים'] ? `<p class="muted">אחראי: ${esc(g['אחראים'])}</p>` : ''}<p class="cf-syl" translate="no">${esc(g['סילבוס'])}</p>`
-    : '<p class="muted">לא מצאתי את הסילבוס של הקורס (הוא לא נפתח בסמסטרים האחרונים). הוא מופיע בקטלוג הטכניון.</p>';
+      ${up ? '<button class="btn danger" value="remove" formnovalidate>מחק את הקובץ שהעלית</button>' : ''}
+      ${!c.drive ? '<button class="btn" value="drive" formnovalidate>📁 קשר תיקיית Drive</button>' : ''}
+      <a class="btn" href="${esc(catalog)}" target="_blank" rel="noopener">🏛️ קטלוג ↗</a>
+      <button class="btn" value="cancel" formnovalidate>סגור</button>
+      <button class="btn primary" value="save">שמור</button>
+    </div>`, (action, fd) => {
+    if (action === 'drive') { setTimeout(() => cdriveLinkDialog(code), 30); return; }
+    if (action === 'remove') { SylDB.del(code).then(() => toast('הקובץ נמחק')); return; }
+    if (action !== 'save') return;
+    const file = fd.get('file');
+    if (!file?.size) { $('#sylErr').textContent = 'בחר קובץ להעלאה.'; return false; }
+    if (file.size > 30e6) { $('#sylErr').textContent = 'הקובץ גדול מדי (עד 30MB).'; return false; }
+    SylDB.put(code, { name: file.name, blob: file, at: Date.now() }).then(() => toast('הסילבוס נשמר. לחיצה על 📖 תפתח אותו'), e => toast('לא הצלחתי לשמור: ' + e.message));
+  }, async () => {
+    try { await CF.loadRecent(); } catch {}
+    const box = $('#sylBody');
+    if (!box) return;
+    const g = CF.find(code)?.course.general;
+    box.innerHTML = g?.['סילבוס']
+      ? `${g['אחראים'] ? `<p class="muted">אחראי: ${esc(g['אחראים'])}</p>` : ''}<p class="cf-syl" translate="no">${esc(g['סילבוס'])}</p>`
+      : '<p class="muted">הקורס לא נפתח בסמסטרים האחרונים, ולכן אין טקסט רשמי. הוא מופיע בקטלוג הטכניון.</p>';
+  });
 }
 
 // ---------- Panopto: optional folder per course, and search ----------

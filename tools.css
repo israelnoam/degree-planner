@@ -1,5 +1,7 @@
 /* ---------- 🧰 Tools tab ---------- */
-.tl-group { margin: 22px 0 10px; font-size: 1rem; color: var(--muted); font-weight: 700; }
+/* Every section heading looks the same: title, then a thin line to the edge. */
+.tl-group { margin: 22px 0 10px; font-size: 1rem; color: var(--muted); font-weight: 700; display: flex; align-items: center; gap: 10px; }
+.tl-group::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .tl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
 .tl-card {
   position: relative; display: flex; align-items: stretch; background: var(--panel-2);
@@ -34,8 +36,9 @@ button.tl-card { cursor: pointer; font: inherit; padding: 0; width: 100%; }
 /* VS Code and the folder path only mean something on the PC: hidden on phones and tablets. */
 @media (max-width: 600px), (hover: none) and (pointer: coarse) { .tl-app-acts { display: none; } }
 .tl-badge { align-self: center; margin-inline-end: 12px; font-size: .75rem; padding: 2px 8px; border-radius: 99px; background: var(--brand); color: #fff; font-weight: 700; }
-.nb-box { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 10px; }
-.nb-head { justify-content: space-between; }
+.nb-box { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; display: grid; gap: 10px; }
+.nb-wrap { display: grid; gap: 10px; }
+.nb-head { justify-content: space-between; background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; }
 .nb-courses { display: flex; flex-wrap: wrap; gap: 6px; }
 .nb-courses small { opacity: .7; margin-inline-start: 4px; }
 .nb-alert { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 12%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); }
@@ -54,9 +57,17 @@ button.tl-card { cursor: pointer; font: inherit; padding: 0; width: 100%; }
 .nb-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: top; background: #fff; }
 .nb-meta { display: flex; flex-direction: column; min-width: 0; }
 .nb-meta b { font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tl-courses { display: grid; gap: 8px; }
-.tl-course { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
-.tl-course .link-row { margin: 6px 0 0; }
+/* Course cards (and Notability semester cards): the name on top, all the links inside. */
+.tl-courses { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; align-items: start; }
+.tl-course { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; }
+.tl-cname { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 10px 14px; border-radius: 13px 13px 0 0; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel)); }
+.tl-cname b { font-size: .98rem; }
+.tl-course .link-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; padding: 10px 12px 12px; }
+.tl-course .link-row > .btn, .tl-course .tl-menu > summary { width: 100%; justify-content: center; text-align: center; white-space: normal; text-decoration: none; }
+.tl-course .link-row > * { align-self: stretch; }
+.tl-course .tl-menu { display: block; margin: 0; }
+.tl-course .tl-menu > summary { height: 100%; box-sizing: border-box; display: flex; align-items: center; }
 /* 📚 study materials: a small menu under its button */
 .tl-menu { position: relative; display: inline-block; }
 .tl-menu > summary { list-style: none; cursor: pointer; }
@@ -64,8 +75,6 @@ button.tl-card { cursor: pointer; font: inherit; padding: 0; width: 100%; }
 .tl-menu[open] > summary { border-color: var(--accent); }
 .tl-menu-list { position: absolute; z-index: 30; top: calc(100% + 4px); inset-inline-start: 0; min-width: 190px; display: grid; gap: 4px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px var(--shadow-soft); }
 .tl-menu-list .btn { width: 100%; justify-content: flex-start; text-align: start; text-decoration: none; }
-.nb-sem { display: grid; gap: 6px; }
-.nb-sem h4 { margin: 4px 0 0; color: var(--muted); font-size: .85rem; }
 .small { font-size: .8rem; }
 
 /* ---------- 📐 formula sheets: app chrome ---------- */

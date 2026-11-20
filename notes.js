@@ -267,7 +267,7 @@ function nbSectionHtml() {
   const due = nbDue();
   const when = new Date(t.at).toLocaleString(LOCALE, { day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' });
   const sweep = Number(lsGet(LS_NB_SWEEP, 0));
-  return `<div class="nb-box">
+  return `<div class="nb-wrap">
     <div class="row wrap nb-head">
       <span class="muted">${t.files.length} מחברות · ${linked.length} קורסים · עודכן ${when}${NB.loading ? ' · מרענן…' : ''}</span>
       <span class="row wrap">
@@ -282,7 +282,10 @@ function nbSectionHtml() {
     ${dupes ? `<div class="nb-alert"><span>📑 <b>${dupes}</b> עותקים ישנים של מחברות שנשמרו מחדש. ${NB.canWrite() ? '' : 'כדי להעביר אותם לסל של הדרייב צריך אישור לגישה מלאה לדרייב (פעם אחת).'}</span>
       <button class="btn small primary" type="button" id="nbDupes">${NB.canWrite() ? 'העבר לסל' : '🔓 אשר ונקה'}</button></div>` : ''}
     ${NB.lastCleanup ? `<p class="muted small">🧹 ${NB.lastCleanup} עותקים ישנים הועברו לסל של הדרייב ברענון האחרון.</p>` : ''}
-    ${linked.length ? sems.map(s => `<div class="nb-sem">${sems.length > 1 || s !== 'אחר' ? `<h4>${esc(s)}</h4>` : ''}<div class="nb-courses">${linked.filter(c => c.sem === s).map(c => `<button type="button" class="btn small" data-nbopen="${esc(c.code)}">📓 ${esc(c.name)} <small>${c.n}</small></button>`).join('')}</div></div>`).join('')
+    ${linked.length ? `<div class="tl-courses">${sems.map(s => { const list = linked.filter(c => c.sem === s); return `<div class="tl-course">
+        <div class="tl-cname"><b>${esc(s)}</b> <small class="muted">${list.length} קורסים</small></div>
+        <div class="link-row">${list.map(c => `<button type="button" class="btn small" data-nbopen="${esc(c.code)}">📓 ${esc(c.name)} <small>${c.n}</small></button>`).join('')}</div>
+      </div>`; }).join('')}</div>`
       : '<p class="muted">עוד לא שויכו תיקיות לקורסים. לחץ על "שיוך לקורסים": האפליקציה מציעה התאמה לכל תיקייה, ואתה מאשר.</p>'}
   </div>`;
 }
