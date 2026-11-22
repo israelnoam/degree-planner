@@ -44,10 +44,10 @@ function allToolLinks() {
 // local folder (browsers block file:// links), so the folder opens in VS Code or by its copied path.
 const MY_APPS = [
   { id: 'learning-app', title: 'אפליקציית הלמידה שלי', url: 'https://noam-learning-app.israelnoam2001.workers.dev/',
-    folder: 'C:\\Users\\israe\\learning-app', vscode: 'vscode://file/C:/Users/israe/learning-app',
+    folder: 'C:\\Users\\israe\\Projects\\curio', vscode: 'vscode://file/C:/Users/israe/Projects/curio',
     logo: 'icons/logos/learning-app.svg', color: '#7c3aed' },
   { id: 'learning-helper', title: 'Learning Helper · מכניקת מוצקים 2מ', url: 'https://solids2-visual-lessons.vercel.app/',
-    folder: 'C:\\Users\\israe\\Learning Helper', vscode: 'vscode://file/C:/Users/israe/Learning%20Helper',
+    folder: 'C:\\Users\\israe\\Projects\\visual-learning-helper', vscode: 'vscode://file/C:/Users/israe/Projects/visual-learning-helper',
     logo: 'icons/logos/learning-helper.svg', color: '#2456c9' },
   { id: 'steam-tables', title: 'טבלאות קיטור · תרמודינמיקה 1', url: 'https://israelnoam.github.io/steam-tables/',
     folder: 'C:\\Users\\israe\\Projects\\steam-tables-calculator', vscode: 'vscode://file/C:/Users/israe/Projects/steam-tables-calculator',
