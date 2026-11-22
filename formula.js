@@ -653,7 +653,12 @@ function fsAppendJson(intoId) {
   input.type = 'file'; input.accept = '.json,application/json';
   input.onchange = async () => {
     try {
-      const data = JSON.parse(await input.files[0].text());
+      const text = await input.files[0].text();
+      // Same repair as the AI answers: a single backslash ("\vec", "\frac") is not valid JSON.
+      let parsed;
+      try { parsed = JSON.parse(text); }
+      catch { parsed = JSON.parse(text.replace(/\\(?!["\\/bfnrt]|u[0-9a-fA-F]{4})/g, '\\\\')); }
+      const data = fsFixTex(parsed);
       const raw = Array.isArray(data) ? data : Array.isArray(data.sections) ? data.sections : (Array.isArray(data.blocks) ? [data] : null);
       if (!raw) throw new Error('בקובץ אין פרק: צריך "sections" או "blocks"');
       const added = fsCleanOut({ sections: raw }).sections
@@ -1037,7 +1042,7 @@ function fsParseJson(text) {
 // backslash back. A real line break is kept, except inside a formula field.
 function fsFixTex(v, key) {
   if (typeof v === 'string') {
-    let s = v.replace(/\f/g, '\\f').replace(/[\b]/g, '\\b').replace(/\r(?=[a-zA-Z])/g, '\\r').replace(/\t(?=[a-zA-Z])/g, '\\t');
+    let s = v.replace(/\f/g, '\\f').replace(/[\b]/g, '\\b').replace(/\u000b/g, '\\v').replace(/\r(?=[a-zA-Z])/g, '\\r').replace(/\t(?=[a-zA-Z])/g, '\\t');
     s = key === 'tex' ? s.replace(/\n(?=[a-zA-Z])/g, '\\n') : s.replace(/\n(?=(?:abla|eq|ot|otin|eg|u|i)(?![a-zA-Z\u0590-\u05ff]))/g, '\\n');
     return s;
   }
