@@ -277,6 +277,7 @@ async function fsLayout(sheet, host) {
 
 // ---------- screens ----------
 function renderFormula(root) {
+  fsApplyExtras();
   const sheet = fsSheet();
   if (!sheet) { fsOpenId = null; renderSheetList(root); }
   else renderSheetEditor(root, sheet);
@@ -2115,4 +2116,163 @@ function fsWide() {
   dlg.classList.add('wide');
   // A late "close" from the dialog before this one must not shrink this one.
   dlg.addEventListener('close', () => { if (!dlg.open) dlg.classList.remove('wide'); }, { once: true });
+}
+
+
+// ---------- one-time additions to the Physics 2 sheet ----------
+// The basic constants and the rho / E / phi triangle. Added once to the Physics 2 sheet the next time the
+// formula screen opens (the sheet remembers which ones it already got, so deleting a section keeps it deleted).
+const FS_EXTRAS = [
+ {
+  "key": "consts",
+  "section": {
+   "title": "קבועים בסיסיים",
+   "blocks": [
+    {
+     "t": "kv",
+     "label": "קבוע קולון",
+     "tex": "k=\\frac{1}{4\\pi\\varepsilon_0}=8.99\\times10^{9}\\ \\frac{N\\cdot m^2}{C^2}"
+    },
+    {
+     "t": "kv",
+     "label": "פרמיטיביות הריק",
+     "tex": "\\varepsilon_0=8.85\\times10^{-12}\\ \\frac{C^2}{N\\cdot m^2}"
+    },
+    {
+     "t": "kv",
+     "label": "חדירות מגנטית",
+     "tex": "\\mu_0=4\\pi\\times10^{-7}=1.257\\times10^{-6}\\ \\frac{T\\cdot m}{A}"
+    },
+    {
+     "t": "kv",
+     "label": "קבוע ביו-סבר",
+     "tex": "\\frac{\\mu_0}{4\\pi}=10^{-7}\\ \\frac{T\\cdot m}{A}"
+    },
+    {
+     "t": "kv",
+     "label": "מהירות האור",
+     "tex": "c=\\frac{1}{\\sqrt{\\mu_0\\varepsilon_0}}=3\\times10^{8}\\ \\frac{m}{s}"
+    },
+    {
+     "t": "kv",
+     "label": "מטען יסודי",
+     "tex": "e=1.602\\times10^{-19}\\ C"
+    },
+    {
+     "t": "kv",
+     "label": "מסת אלקטרון",
+     "tex": "m_e=9.11\\times10^{-31}\\ kg"
+    },
+    {
+     "t": "kv",
+     "label": "מסת פרוטון",
+     "tex": "m_p=1.673\\times10^{-27}\\ kg"
+    },
+    {
+     "t": "kv",
+     "label": "מסת נייטרון",
+     "tex": "m_n=1.675\\times10^{-27}\\ kg"
+    },
+    {
+     "t": "kv",
+     "label": "אלקטרון-וולט",
+     "tex": "1\\,eV=1.602\\times10^{-19}\\ J"
+    },
+    {
+     "t": "kv",
+     "label": "קבוע פלנק",
+     "tex": "h=6.626\\times10^{-34}\\ J\\cdot s"
+    },
+    {
+     "t": "kv",
+     "label": "תאוצת הכובד",
+     "tex": "g=9.8\\ \\frac{m}{s^2}"
+    }
+   ]
+  }
+ },
+ {
+  "key": "triangle",
+  "section": {
+   "title": "משולש המעברים: ρ, E, φ",
+   "blocks": [
+    {
+     "t": "kv",
+     "label": "גזירה (קל): E ← φ",
+     "tex": "\\vec E=-\\vec\\nabla\\varphi"
+    },
+    {
+     "t": "kv",
+     "label": "גזירה (קל): ρ ← E",
+     "tex": "\\rho=\\frac{\\vec\\nabla\\cdot\\vec E}{4\\pi k}"
+    },
+    {
+     "t": "kv",
+     "label": "גזירה (קל): ρ ← φ (לפלסיאן)",
+     "tex": "\\rho=-\\frac{\\nabla^2\\varphi}{4\\pi k}"
+    },
+    {
+     "t": "kv",
+     "label": "אינטגרציה (קשה): E ← ρ",
+     "tex": "\\vec E=\\int\\frac{k\\,\\rho\\,dV}{r^2}\\,\\hat r"
+    },
+    {
+     "t": "kv",
+     "label": "אינטגרציה (קשה): φ ← E",
+     "tex": "\\varphi=-\\int_{\\infty}^{r}\\vec E\\cdot d\\vec r"
+    },
+    {
+     "t": "kv",
+     "label": "אינטגרציה (קשה): φ ← ρ",
+     "tex": "\\varphi=\\int\\frac{k\\,\\rho\\,dV}{r}"
+    },
+    {
+     "t": "kv",
+     "label": "תנאי ייחוס",
+     "tex": "\\varphi(\\infty)=0"
+    },
+    {
+     "t": "steps",
+     "title": "סד״פ: מעבר בין שני גדלים:",
+     "items": [
+      "**זיהוי הכיוון:** גזירה כשהולכים מ-φ ל-E, מ-E ל-ρ, או מ-φ ל-ρ. אינטגרציה בכיוון ההפוך.",
+      "**גזירה:** מציבים בנוסחת הגזירה, למשל $\\vec E=-\\vec\\nabla\\varphi$ או $\\rho=\\frac{\\vec\\nabla\\cdot\\vec E}{4\\pi k}$.",
+      "**אינטגרציה:** כופלים ב-$k\\,\\rho\\,dV$ ומחלקים ב-$r^2$ (ל-E) או ב-$r$ (ל-φ), ומציבים $\\varphi(\\infty)=0$.",
+      "**בדיקת סימן:** $\\vec E=-\\vec\\nabla\\varphi$, ולכן השדה מכוון מפוטנציאל גבוה לנמוך."
+     ]
+    },
+    {
+     "t": "callout",
+     "variant": "trap",
+     "title": "קיר הבושה - מלכודות קריטיות:",
+     "items": [
+      "**שני מינוסים:** $\\vec E=-\\vec\\nabla\\varphi$ ו-$\\varphi=-\\int_{\\infty}^{r}\\vec E\\cdot d\\vec r$. לא להחליף ביניהם.",
+      "**לפלסיאן, לא גרדיאנט:** ρ מ-φ היא נגזרת שנייה $\\nabla^2\\varphi$, לא $\\nabla\\varphi$.",
+      "**בלי תנאי ייחוס אין φ יחיד:** באינטגרציה תמיד מציבים $\\varphi(\\infty)=0$."
+     ]
+    },
+    {
+     "t": "callout",
+     "variant": "tip",
+     "title": "דגש:",
+     "md": "$4\\pi k=\\frac{1}{\\varepsilon_0}$, לכן $\\rho=\\varepsilon_0\\,\\vec\\nabla\\cdot\\vec E$. אם הקורס כותב ב-$\\varepsilon_0$, זו אותה משוואה."
+    }
+   ]
+  }
+ }
+];
+function fsApplyExtras() {
+  let added = 0;
+  for (const s of fsSheets()) {
+    if (!fsHasContent(s)) continue;
+    if (!/114052|114075/.test(String(s.course)) && !/פי[סז]יקה 2/.test(`${s.title || ''} ${courseLabel(s.course) || ''}`)) continue;
+    const done = s.extras || [];
+    const todo = FS_EXTRAS.filter(x => !done.includes(x.key));
+    if (!todo.length) continue;
+    const have = new Set((s.sections || []).map(x => x.title));
+    const fresh = todo.filter(x => !have.has(x.section.title)).map(x => ({ id: fsId(), ...structuredClone(x.section) }));
+    Store.put('sheet', s.id, { sections: [...(s.sections || []), ...fresh], extras: [...done, ...todo.map(x => x.key)] });
+    added += fresh.length;
+  }
+  if (added) toast(`נוספו לנוסחאון של פיסיקה 2: קבועים בסיסיים ומשולש המעברים`);
 }
