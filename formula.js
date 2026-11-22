@@ -184,6 +184,11 @@ async function fsLayout(sheet, host) {
   measure.style.width = colW + 'px';
   measure.innerHTML = units.map(u => `<div class="fs-unit">${u.html}</div>`).join('');
   document.body.appendChild(measure);
+  // The fonts the sheet uses (KaTeX's, above all) are only fetched once something uses them, so wait for
+  // them again now. Measuring before they arrive gave heights that were too small: text was cut off.
+  measure.getBoundingClientRect();
+  await document.fonts?.ready;
+  if (token !== fsLayoutToken) { measure.remove(); return null; }
   const nodes = [...measure.children];
   // A formula wider than its column is shrunk just enough to fit (never below half size).
   const wide = $$('.katex-display > .katex, .fm', measure);
@@ -202,51 +207,71 @@ async function fsLayout(sheet, host) {
     return nodes.map(n => n.getBoundingClientRect().height);
   };
 
-  // Auto-fit: the biggest font that still fits in the pages you allow.
-  let scale = Math.max(0.6, Math.min(1.3, +sheet.scale || 1));
-  let packed;
-  if (sheet.autofit !== false) {
-    const tries = [1.2, 1.15, 1.1, 1.06, 1.03, 1, 0.97, 0.94, 0.91, 0.88, 0.85, 0.82, 0.79, 0.76, 0.73, 0.7, 0.67, 0.64];
-    for (const s of tries) {
-      packed = fsPack(heightsAt(s), colH);
-      scale = s;
-      if (Math.ceil(packed.length / cols) <= target) break;
-    }
-  } else packed = fsPack(heightsAt(scale), colH);
-  measure.style.fontSize = (FS_PAGE.base * scale) + 'px';
-
-  const nPages = Math.max(1, Math.ceil(packed.length / cols));
   const footer = sheet.footer || sheet.title || '';
-  const pages = [];
-  for (let p = 0; p < nPages; p++) {
-    const page = document.createElement('div');
-    page.className = `fs-page fs-theme-${sheet.theme || 'standard'}${p >= target ? ' over' : ''}`;
-    page.style.fontSize = (FS_PAGE.base * scale) + 'px';
-    page.style.setProperty('--cols', cols);
-    const row = document.createElement('div');
-    row.className = 'fs-cols';
-    for (let c = 0; c < cols; c++) {
-      const col = document.createElement('div');
-      col.className = 'fs-col';
-      col.style.width = colW + 'px';
-      for (const i of packed[p * cols + c] || []) {
-        const n = nodes[i];
-        n.dataset.si = units[i].si;
-        col.appendChild(n);
+  // Packs the units into columns (auto-fit: the biggest font that still fits in the pages you allow)
+  // and lays them out as pages. `slack` is room held back at the bottom of every column.
+  const build = slack => {
+    measure.append(...nodes); // back into the measuring box (they were moved into pages by an earlier try)
+    const room = colH - slack;
+    let scale = Math.max(0.6, Math.min(1.3, +sheet.scale || 1));
+    let packed;
+    if (sheet.autofit !== false) {
+      const tries = [1.2, 1.15, 1.1, 1.06, 1.03, 1, 0.97, 0.94, 0.91, 0.88, 0.85, 0.82, 0.79, 0.76, 0.73, 0.7, 0.67, 0.64];
+      for (const s of tries) {
+        packed = fsPack(heightsAt(s), room);
+        scale = s;
+        if (Math.ceil(packed.length / cols) <= target) break;
       }
-      row.appendChild(col);
+    } else packed = fsPack(heightsAt(scale), room);
+    measure.style.fontSize = (FS_PAGE.base * scale) + 'px';
+
+    const nPages = Math.max(1, Math.ceil(packed.length / cols));
+    const pages = [];
+    for (let p = 0; p < nPages; p++) {
+      const page = document.createElement('div');
+      page.className = `fs-page fs-theme-${sheet.theme || 'standard'}${p >= target ? ' over' : ''}`;
+      page.style.fontSize = (FS_PAGE.base * scale) + 'px';
+      page.style.setProperty('--cols', cols);
+      const row = document.createElement('div');
+      row.className = 'fs-cols';
+      for (let c = 0; c < cols; c++) {
+        const col = document.createElement('div');
+        col.className = 'fs-col';
+        col.style.width = colW + 'px';
+        for (const i of packed[p * cols + c] || []) {
+          const n = nodes[i];
+          n.dataset.si = units[i].si;
+          col.appendChild(n);
+        }
+        row.appendChild(col);
+      }
+      page.appendChild(row);
+      const foot = document.createElement('div');
+      foot.className = 'fs-foot';
+      foot.textContent = `${footer}${nPages > 1 ? `  ·  ${p + 1}/${nPages}` : ''}`;
+      page.appendChild(foot);
+      pages.push(page);
     }
-    page.appendChild(row);
-    const foot = document.createElement('div');
-    foot.className = 'fs-foot';
-    foot.textContent = `${footer}${nPages > 1 ? `  ·  ${p + 1}/${nPages}` : ''}`;
-    page.appendChild(foot);
-    pages.push(page);
+    return { pages, nPages, scale };
+  };
+
+  let slack = 0, built = build(0);
+  // The measuring box and the real column can differ by a pixel or so per block (fonts, rounding), and a
+  // column's overflow is cut off. So after the pages are on screen, look at how much each column
+  // overflows and, if it does, pack again with that much room held back.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (token !== fsLayoutToken) break;
+    host.replaceChildren(...built.pages);
+    if (!host.isConnected) break;
+    const over = Math.max(0, ...$$('.fs-col', host).map(c => c.scrollHeight - c.clientHeight));
+    if (over <= 1) break;
+    slack += over + 3;
+    built = build(slack);
   }
   measure.remove();
   if (token !== fsLayoutToken) return null;
-  host.replaceChildren(...pages);
-  return { pages: nPages, target, scale, cols };
+  host.replaceChildren(...built.pages);
+  return { pages: built.nPages, target, scale: built.scale, cols };
 }
 
 // ---------- screens ----------
