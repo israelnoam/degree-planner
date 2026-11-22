@@ -602,6 +602,7 @@ function fsMoreDialog(sheet) {
     <div class="fs-more">
       <button class="btn" type="button" id="fmExport">💾 ייצוא JSON (גיבוי / שליחה ל-Claude)</button>
       <button class="btn" type="button" id="fmImport">📥 החלף בתוכן מ-JSON</button>
+      <button class="btn" type="button" id="fmAppend">➕ הוסף פרק מ-JSON (בלי לדרוס)</button>
       <button class="btn" type="button" id="fmBrief">📋 העתק בריף ליצירה עם Claude</button>
       <label class="field"><span class="field-label">כותרת תחתונה</span><input id="fmFooter" value="${esc(sheet.footer || '')}" placeholder="${esc(sheet.title || '')}"></label>
       <button class="btn danger" type="button" id="fmDelete">🗑️ מחק נוסחאון</button>
@@ -612,6 +613,7 @@ function fsMoreDialog(sheet) {
       fsDownload(`${sheet.title || 'נוסחאון'}.json`, JSON.stringify(fsExportable(sheet), null, 1));
     };
     $('#fmImport', form).onclick = () => { $('#modal').close(); fsImportJson(sheet.id); };
+    $('#fmAppend', form).onclick = () => { $('#modal').close(); fsAppendJson(sheet.id); };
     $('#fmBrief', form).onclick = async () => { await navigator.clipboard.writeText(fsBriefPrompt(sheet)); toast('הבריף הועתק. הדבק אותו ל-Claude יחד עם קבצי הקורס.'); };
     $('#fmFooter', form).onchange = e => Store.put('sheet', sheet.id, { footer: e.target.value.trim() });
     $('#fmDelete', form).onclick = () => {
@@ -640,6 +642,30 @@ function fsImportJson(intoId) {
       fsOpenId = id; if (currentView !== 'formula') go('formula'); else render();
       toast('הנוסחאון יובא');
     } catch (e) { toast('הייבוא נכשל: ' + e.message); }
+  };
+  input.click();
+}
+
+// Adds sections from a JSON file to the END of an existing sheet, keeping the sections already there.
+// Accepts a whole sheet ({sections:[…]}), one section ({title, blocks}) or a list of sections.
+function fsAppendJson(intoId) {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.json,application/json';
+  input.onchange = async () => {
+    try {
+      const data = JSON.parse(await input.files[0].text());
+      const raw = Array.isArray(data) ? data : Array.isArray(data.sections) ? data.sections : (Array.isArray(data.blocks) ? [data] : null);
+      if (!raw) throw new Error('בקובץ אין פרק: צריך "sections" או "blocks"');
+      const added = fsCleanOut({ sections: raw }).sections
+        .filter(s => s.blocks.length && s.blocks.every(b => FS_BLOCKS[b.t]))
+        .map(s => ({ id: fsId(), ...s }));
+      if (!added.length) throw new Error('אין בקובץ פרק עם בלוקים תקינים');
+      const sheet = Store.get('sheet', intoId);
+      if (!sheet) throw new Error('הנוסחאון לא נמצא');
+      fsPutSections(sheet, [...(sheet.sections || []), ...added]);
+      fsOpenId = intoId; if (currentView !== 'formula') go('formula'); else render();
+      toast(`נוספו ${added.length} פרקים לסוף הנוסחאון`);
+    } catch (e) { toast('ההוספה נכשלה: ' + e.message); }
   };
   input.click();
 }
