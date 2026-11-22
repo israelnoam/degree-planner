@@ -44,7 +44,8 @@ const FS_BLOCKS = {
   steps: ['סדר פעולות (סד״פ)', [['title', 'text', 'כותרת'], ['items', 'lines', 'שלב בכל שורה (**שם השלב:** הסבר)']]],
   callout: ['תיבת דגש / מלכודות', [['variant', 'select:tip,trap,note', 'סוג (tip=דגש אדום, trap=קיר הבושה, note=כחול)'], ['title', 'text', 'כותרת'], ['items', 'lines', 'נקודות (שורה לכל אחת)'], ['md', 'md', 'או טקסט חופשי']]],
   example: ['דוגמת בזק', [['label', 'text', 'תווית'], ['md', 'md', 'הדוגמה ($...$ עם \\Rightarrow)']]],
-  figure: ['איור (SVG)', [['svg', 'code', 'קוד SVG'], ['caption', 'text', 'כיתוב'], ['width', 'number', 'רוחב (% מהעמודה)']]],
+  figure: ['איור (SVG)', [['svg', 'code', 'קוד SVG'], ['caption', 'text', 'כיתוב'], ['width', 'number', 'רוחב (% מהעמודה)'], ['span', 'select:1,2,3', 'פרוש על כמה עמודות (2-3: רצועה בראש העמוד)']]],
+  image: ['תמונה', [['src', 'image', 'קובץ תמונה'], ['caption', 'text', 'כיתוב'], ['span', 'select:1,2,3', 'פרוש על כמה עמודות (2-3: רצועה בראש העמוד)']]],
   table: ['טבלה', [['head', 'row', 'כותרות (מופרדות ב- | )'], ['rows', 'rows', 'שורה לכל שורה, תאים מופרדים ב- | ']]],
   symbols: ['טבלת סימנים ויחידות', [['rows', 'rows', 'סימן | משמעות | יחידות (שורה לכל סימן)']]],
   code: ['קטע קוד', [['title', 'text', 'כותרת'], ['code', 'code', 'קוד (מוצג כמו שהוא, משמאל לימין)']]],
@@ -111,7 +112,7 @@ const fsCell = c => (/^\s*<svg/i.test(c) ? fsSvg(c) : fsMd(c));
 function fsBlockHtml(b) {
   switch (b.t) {
     case 'h': return `<div class="fb-h">${fsMd(b.md)}</div>`;
-    case 'kv': return `<div class="fb-kv"><b>${fsMd(b.label)}${b.label ? ':' : ''}</b> <span class="fm">${fsTex(b.tex)}</span>${b.note ? ` <span>${fsMd(b.note)}</span>` : ''}</div>`;
+    case 'kv': return `<div class="fb-kv"><b>${fsMd(b.label)}${b.label ? ':' : ''}</b> <span class="fm">${fsTex(b.tex)}</span>${b.note ? ` <span class="fb-note">${fsMd(b.note)}</span>` : ''}</div>`;
     case 'eq': return `<div class="fb-eq">${fsTex(b.tex, true)}</div>`;
     case 'text': return `<div class="fb-text">${fsMd(b.md)}</div>`;
     case 'list': {
@@ -127,6 +128,7 @@ function fsBlockHtml(b) {
     }
     case 'example': return `<div class="fb-example"><b>${fsMd(b.label || 'דוגמת בזק')}:</b> ${fsMd(b.md)}</div>`;
     case 'figure': return `<figure class="fb-fig" style="--w:${Math.max(20, Math.min(100, +b.width || 90))}%">${fsSvg(b.svg)}${b.caption ? `<figcaption>${fsMd(b.caption)}</figcaption>` : ''}</figure>`;
+    case 'image': return `<figure class="fb-fig fb-img">${/^(data:image\/|https:\/\/|sheets\/)/.test(b.src || '') ? `<img src="${esc(b.src)}" alt="">` : '<div class="fb-badsvg">🖼️ אין תמונה: בחר קובץ בעריכת הבלוק</div>'}${b.caption ? `<figcaption>${fsMd(b.caption)}</figcaption>` : ''}</figure>`;
     case 'table': return `<table class="fb-table">${b.head?.length ? `<thead><tr>${b.head.map(h => `<th>${fsMd(h)}</th>`).join('')}</tr></thead>` : ''}
       <tbody>${(b.rows || []).map(r => `<tr>${r.map(c => `<td>${fsCell(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
     case 'symbols': return `<table class="fb-table fb-sym"><thead><tr><th>סימן</th><th>משמעות</th><th>יחידות</th></tr></thead>
@@ -153,20 +155,53 @@ function fsUnits(sheet) {
     const blocks = (s.blocks || []).map((b, bi) => ({ b, bi })).filter(x => !x.b.hidden);
     const title = `<h3 class="fs-sec" data-sec="${si}">${fsMd(s.title)}</h3>`;
     if (!blocks.length) { units.push({ html: title, si, bi: -1 }); return; }
-    blocks.forEach(({ b, bi }, k) => units.push({ html: (k === 0 ? title : '') + `<div class="fs-blk" data-sec="${si}" data-blk="${bi}">${fsBlockHtml(b)}</div>`, si, bi }));
+    blocks.forEach(({ b, bi }, k) => units.push({ html: (k === 0 ? title : '') + `<div class="fs-blk" data-sec="${si}" data-blk="${bi}">${fsBlockHtml(b)}</div>`, si, bi, span: ['figure', 'image'].includes(b.t) && +b.span > 1 ? +b.span : 0 }));
   });
   return units;
 }
 
-function fsPack(heights, colH) {
-  const cols = [[]];
+// Packs units into columns, in order. A unit that spans columns (an image or figure set to 2-3 columns)
+// becomes a band across the top of a page, over the first columns, which are shorter by its height.
+// Its whole section moves with it to the next page that starts (like a figure in LaTeX), and the
+// sections after it fill the rest of the current page, so no page is left half empty.
+// Returns { cols: [[unit index…]…], bands: { page: { unit, span, h } } }.
+function fsPack(heights, colH, units = [], perPage = 1, gap = 0) {
+  const out = [[]], bands = {};
   let h = 0;
-  heights.forEach((uh, i) => {
-    if (h + uh > colH && cols[cols.length - 1].length) { cols.push([]); h = 0; }
-    cols[cols.length - 1].push(i);
-    h += uh;
-  });
-  return cols;
+  const cur = () => out.length - 1;
+  const pageOf = c => Math.floor(c / perPage);
+  const roomOf = c => { const b = bands[pageOf(c)]; return b && c % perPage < b.span ? colH - b.h : colH; };
+  const queue = [];
+  const atPageStart = () => !out[cur()].length && cur() % perPage === 0 && !bands[pageOf(cur())];
+  const band = grp => {
+    const bi = grp.find(i => units[i]?.span);
+    bands[pageOf(cur())] = { unit: bi, span: Math.min(units[bi].span, perPage), h: heights[bi] + gap };
+    grp.filter(i => i !== bi).forEach(put);
+  };
+  function put(i) {
+    if (h + heights[i] > roomOf(cur()) && out[cur()].length) {
+      out.push([]); h = 0;
+      if (queue.length && atPageStart()) band(queue.shift());
+    }
+    out[cur()].push(i);
+    h += heights[i];
+  }
+  const spanSec = new Set(perPage > 1 ? units.filter(u => u.span).map(u => u.si) : []);
+  for (let i = 0; i < heights.length; i++) {
+    if (spanSec.has(units[i]?.si)) {
+      const grp = [];
+      while (i < heights.length && units[i].si === units[grp[0] ?? i].si) grp.push(i++);
+      i--;
+      if (atPageStart()) band(grp); else queue.push(grp);
+      continue;
+    }
+    put(i);
+  }
+  while (queue.length) {
+    if (!atPageStart()) { do { out.push([]); h = 0; } while (cur() % perPage); }
+    band(queue.shift());
+  }
+  return { cols: out, bands };
 }
 
 async function fsLayout(sheet, host) {
@@ -183,7 +218,12 @@ async function fsLayout(sheet, host) {
   measure.className = `fs-theme-${sheet.theme || 'standard'} fs-measure`;
   measure.style.width = colW + 'px';
   measure.innerHTML = units.map(u => `<div class="fs-unit">${u.html}</div>`).join('');
+  // A unit that spans columns is measured (and later shown) at the width of those columns.
+  const bandW = span => span * colW + (span - 1) * FS_PAGE.gap;
+  units.forEach((u, i) => { if (u.span && cols > 1) { u.span = Math.min(u.span, cols); measure.children[i].style.width = bandW(u.span) + 'px'; } else u.span = 0; });
   document.body.appendChild(measure);
+  // Images must be loaded before they are measured. (Not img.decode(): for this hidden off-screen box it can wait forever.)
+  await Promise.all($$('img', measure).map(im => im.complete ? 0 : new Promise(ok => { im.onload = im.onerror = ok; setTimeout(ok, 3000); })));
   // The fonts the sheet uses (KaTeX's, above all) are only fetched once something uses them, so wait for
   // them again now. Measuring before they arrive gave heights that were too small: text was cut off.
   measure.getBoundingClientRect();
@@ -215,17 +255,19 @@ async function fsLayout(sheet, host) {
     const room = colH - slack;
     let scale = Math.max(0.6, Math.min(1.3, +sheet.scale || 1));
     let packed;
+    const pagesOf = pk => Math.max(Math.ceil(pk.cols.length / cols), ...Object.keys(pk.bands).map(p => +p + 1));
+    const pack = s => fsPack(heightsAt(s), room, units, cols, FS_PAGE.gap);
     if (sheet.autofit !== false) {
       const tries = [1.2, 1.15, 1.1, 1.06, 1.03, 1, 0.97, 0.94, 0.91, 0.88, 0.85, 0.82, 0.79, 0.76, 0.73, 0.7, 0.67, 0.64];
       for (const s of tries) {
-        packed = fsPack(heightsAt(s), room);
+        packed = pack(s);
         scale = s;
-        if (Math.ceil(packed.length / cols) <= target) break;
+        if (pagesOf(packed) <= target) break;
       }
-    } else packed = fsPack(heightsAt(scale), room);
+    } else packed = pack(scale);
     measure.style.fontSize = (FS_PAGE.base * scale) + 'px';
 
-    const nPages = Math.max(1, Math.ceil(packed.length / cols));
+    const nPages = Math.max(1, pagesOf(packed));
     const pages = [];
     for (let p = 0; p < nPages; p++) {
       const page = document.createElement('div');
@@ -234,11 +276,21 @@ async function fsLayout(sheet, host) {
       page.style.setProperty('--cols', cols);
       const row = document.createElement('div');
       row.className = 'fs-cols';
+      const band = packed.bands[p];
+      if (band) {
+        const div = document.createElement('div');
+        div.className = 'fs-band';
+        div.style.width = bandW(band.span) + 'px';
+        nodes[band.unit].dataset.si = units[band.unit].si;
+        div.appendChild(nodes[band.unit]);
+        row.appendChild(div);
+      }
       for (let c = 0; c < cols; c++) {
         const col = document.createElement('div');
         col.className = 'fs-col';
         col.style.width = colW + 'px';
-        for (const i of packed[p * cols + c] || []) {
+        if (band && c < band.span) col.style.paddingTop = band.h + 'px';
+        for (const i of packed.cols[p * cols + c] || []) {
           const n = nodes[i];
           n.dataset.si = units[i].si;
           col.appendChild(n);
@@ -272,6 +324,12 @@ async function fsLayout(sheet, host) {
   measure.remove();
   if (token !== fsLayoutToken) return null;
   host.replaceChildren(...built.pages);
+  // In the preview (not in print), a section title that breaks onto a second line is marked in red.
+  if (host.id === 'fsSheet') $$('.fs-sec', host).forEach(h => {
+    const cs = getComputedStyle(h);
+    const line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.32;
+    h.classList.toggle('two-lines', h.clientHeight - parseFloat(cs.paddingBottom) > line * 1.5);
+  });
   return { pages: built.nPages, target, scale: built.scale, cols };
 }
 
@@ -488,6 +546,41 @@ window.addEventListener('resize', () => { if (currentView === 'formula') fsFitPr
 // ---------- editing ----------
 function fsPutSections(sheet, sections) { Store.put('sheet', sheet.id, { sections }); }
 
+// A picked image, kept in the sheet as a data URL (so it syncs and prints with it): at most 1800px wide.
+async function fsImageData(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const k = Math.min(1, 1800 / img.naturalWidth);
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(img, 0, 0, c.width, c.height);
+    return file.type === 'image/png' ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.9);
+  } finally { URL.revokeObjectURL(url); }
+}
+
+// Images are not sent to the AI (a data URL is hundreds of thousands of characters): each one becomes a
+// short "@imgN" stand-in, and the real image is put back into whatever comes back.
+function fsAiStash(obj) {
+  const imgs = [];
+  const json = JSON.stringify(obj, (k, v) => (k === 'src' && typeof v === 'string' && v.length > 200 ? `@img${imgs.push(v) - 1}` : v));
+  const restore = out => {
+    (function walk(o) {
+      if (Array.isArray(o)) o.forEach(walk);
+      else if (o && typeof o === 'object') for (const k of Object.keys(o)) {
+        if (k === 'src' && typeof o[k] === 'string' && /^@img\d+$/.test(o[k])) o[k] = imgs[+o[k].slice(4)] || '';
+        else walk(o[k]);
+      }
+    })(out);
+    return out;
+  };
+  return { json, restore };
+}
+
 function fsFieldHtml([key, kind, label], b) {
   const v = b[key];
   if (kind.startsWith('select:')) {
@@ -498,6 +591,7 @@ function fsFieldHtml([key, kind, label], b) {
   if (kind === 'lines') text = (v || []).join('\n');
   if (kind === 'row') text = (v || []).join(' | ');
   if (kind === 'rows') text = (v || []).map(r => r.join(' | ')).join('\n');
+  if (kind === 'image') return `<label class="field"><span class="field-label">${esc(label)}</span><input type="file" accept="image/*" data-img="${key}"><input type="hidden" name="${key}" value="${esc(text)}"></label>`;
   if (kind === 'number') return `<label class="field"><span class="field-label">${esc(label)}</span><input name="${key}" type="number" value="${esc(text)}" style="width:100px"></label>`;
   if (kind === 'text') return `<label class="field"><span class="field-label">${esc(label)}</span><input name="${key}" value="${esc(text)}"></label>`;
   const rows = kind === 'code' ? 8 : kind === 'tex' ? 2 : 3;
@@ -563,14 +657,20 @@ function fsBlockDialog(sheet, si, bi, fresh) {
     const live = () => { try { $('#fsLive', form).innerHTML = fsBlockHtml(fsReadFields(form, t)); } catch {} };
     loadKatex().then(live);
     form.addEventListener('input', live);
+    $$('[data-img]', form).forEach(inp => inp.onchange = async () => {
+      if (!inp.files[0]) return;
+      try { form.elements[inp.dataset.img].value = await fsImageData(inp.files[0]); live(); }
+      catch { toast('⚠️ לא הצלחתי לקרוא את התמונה'); }
+    });
     $('#fsBlockAiGo', form).onclick = async () => {
       const ask = $('#fsBlockAi', form).value.trim();
       if (!ask) return;
       const msg = $('#fsBlockAiMsg', form);
       msg.textContent = '✨ חושב…';
       try {
-        const out = await fsAiCall(`Edit ONE block of the formula sheet "${sheet.title}" (course: ${courseLabel(sheet.course) || ''}, section: "${sec.title}").
-Current block JSON:\n${JSON.stringify(fsReadFields(form, t))}\n\nThe student asks: ${ask}\n\nReturn {"blocks":[...]} with the replacement block(s) (usually one block of the same type "${t}").`, FS_BLOCKS_SCHEMA);
+        const st = fsAiStash(fsReadFields(form, t));
+        const out = st.restore(await fsAiCall(`Edit ONE block of the formula sheet "${sheet.title}" (course: ${courseLabel(sheet.course) || ''}, section: "${sec.title}").
+Current block JSON:\n${st.json}\n\nThe student asks: ${ask}\n\nReturn {"blocks":[...]} with the replacement block(s) (usually one block of the same type "${t}").`, FS_BLOCKS_SCHEMA));
         const nb = out.blocks?.[0];
         if (!nb) throw new Error('לא התקבל בלוק');
         if (nb.t !== t) { msg.textContent = `ה-AI הציע בלוק מסוג אחר (${FS_BLOCKS[nb.t]?.[0] || nb.t}). הוא נוסף אחרי הבלוק הזה.`; sec.blocks.splice(bi + 1, 0, ...out.blocks); fsPutSections(sheet, secs); return; }
@@ -986,6 +1086,7 @@ const FS_BLOCK_SCHEMA = {
     md: { type: 'string' }, label: { type: 'string' }, tex: { type: 'string' }, note: { type: 'string' },
     title: { type: 'string' }, variant: { type: 'string', enum: ['tip', 'trap', 'note'] }, style: { type: 'string', enum: ['square', 'bullet', 'num'] },
     items: { type: 'array', items: { type: 'string' } }, code: { type: 'string' }, svg: { type: 'string' }, caption: { type: 'string' }, width: { type: 'number' },
+    src: { type: 'string' }, span: { type: 'string', enum: ['1', '2', '3'] },
     head: { type: 'array', items: { type: 'string' } }, rows: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
   },
 };
@@ -1020,7 +1121,7 @@ function fsBriefTask(sheet) {
 - Changes to THE FIXED TEMPLATE the student asked for: ${sheet.brief?.template || '- (use it as is)'}
 - Source priority: past exams > course material (syllabus, official sheets) > the student's summaries > lecture slides > tutorials > homework. An attached existing formula sheet is for style and inspiration.
 
-Block types (field "t"): ${Object.entries(FS_BLOCKS).map(([t, [l, f]]) => `${t} (${l}: ${f.map(x => x[0]).join(', ')})`).join('; ')}.
+Block types (field "t"): ${Object.entries(FS_BLOCKS).filter(([t]) => t !== 'image').map(([t, [l, f]]) => `${t} (${l}: ${f.map(x => x[0]).join(', ')})`).join('; ')}.
 "rows" is an array of arrays of strings; table cells may hold an inline <svg>.`;
 }
 const fsLineBudget = sheet => Math.round((+sheet.pages || 2) * (+sheet.cols || 3) * 58);
@@ -1171,9 +1272,11 @@ function fsAiDialog(sheet) {
     msg.textContent = '✨ עובד על זה… (יכול לקחת דקה)';
     $$('#modalForm button').forEach(b => b.disabled = true);
     const part = scope === 'all' ? secs : [secs[+scope]];
+    const st = fsAiStash({ sections: part });
     fsAiCall(`Formula sheet "${sheet.title}" (course: ${courseLabel(sheet.course)}, ${sheet.pages} pages × ${sheet.cols} columns, profile: ${(sheet.profile || []).join(', ')}).
-${scope === 'all' ? 'The whole sheet' : 'One section of it'}:\n${JSON.stringify({ sections: part })}\n\nThe student asks: ${ask}\n\nReturn {"sections":[...]} replacing ${scope === 'all' ? 'all sections' : 'that one section (you may return more than one if splitting makes sense)'}.`, FS_SECTIONS_SCHEMA, 32000)
+${scope === 'all' ? 'The whole sheet' : 'One section of it'}:\n${st.json}\n\nThe student asks: ${ask}\n\nReturn {"sections":[...]} replacing ${scope === 'all' ? 'all sections' : 'that one section (you may return more than one if splitting makes sense)'}. Keep every "image" block (its "src" exactly as given, e.g. "@img0") unless the student asks to remove it.`, FS_SECTIONS_SCHEMA, 32000)
       .then(out => {
+        st.restore(out);
         if (!fsHasContent(out)) throw new Error('ה-AI החזיר תשובה ריקה. הנוסחאון לא שונה; נסה שוב או נסח את הבקשה אחרת.');
         const before = structuredClone(secs);
         const next = scope === 'all' ? out.sections : [...secs.slice(0, +scope), ...out.sections, ...secs.slice(+scope + 1)];
@@ -2275,4 +2378,146 @@ function fsApplyExtras() {
     added += fresh.length;
   }
   if (added) toast(`נוספו לנוסחאון של פיסיקה 2: קבועים בסיסיים ומשולש המעברים`);
+  fsUpgradeP2();
 }
+
+// ---------- one-time tidy-up of the Physics 2 sheet (agreed with the student, 2026-11-22) ----------
+// Short one-line titles, the constants first, a "basics" section and the basic formulas of the official
+// course sheet that were missing, and the rho / E / phi triangle as a picture across two columns.
+// Every step finds its section and block by title or label, so a sheet edited since is changed only
+// where it still matches. Runs once per sheet ("v2" in its extras).
+const FS_P2_TITLES = {
+  'חוק גאוס: שדה של התפלגות סימטרית (כדור, גליל, מישור, קליפה עבה)': 'גאוס: כדור, גליל, מישור, קליפה',
+  'סופרפוזיציה: קדח/חלל בגוף טעון, לוח + קליפה': 'סופרפוזיציה',
+  'שדה וכוח באינטגרציה ישירה (קולון): טבעת, דיסקה, מוט, קשת': 'שדה וכוח (קולון)',
+  'פוטנציאל: מהשדה, מסופרפוזיציה, ואנרגיית מערכת': 'פוטנציאל ואנרגיית מערכת',
+  'קשרים דיפרנציאליים: בדיקת שדה, ρ מפוטנציאל, פואסון': 'קשרים דיפרנציאליים ופואסון',
+  'מוליכים וקליפות מקוננות: התפלגות מטען, חיבור, הארקה': 'מוליכים: קליפות, חיבור, הארקה',
+  'קיבול והתנגדות מגאומטריה (כולל מוליכות לא אחידה)': 'קיבול, התנגדות וזרם',
+  'גל אלקטרומגנטי: מציאת B/E, קיטוב ופוינטינג': 'גל א״מ: B מ-E, קיטוב, פוינטינג',
+  'התאבכות ועקיפה: יאנג, N סדקים, סדק יחיד': 'התאבכות: יאנג, N סדקים, סדק יחיד',
+  'עזר: קבועים, משוואות מקסוול, קואורדינטות ואינטגרלים': 'עזר: מקסוול, קואורדינטות, אינטגרלים',
+  'קבועים בסיסיים': 'קבועים',
+  'שיטת הדמויות: מישור / כדור מוליך מוארק': 'שיטת הדמויות: מישור / כדור',
+};
+const fsKv = (label, tex, note) => ({ t: 'kv', label, tex, ...(note ? { note } : {}) });
+const FS_P2_BASICS = {
+  title: 'יסודות',
+  blocks: [
+    fsKv('חוק קולון', String.raw`\underline F_{1\to2}=\frac{kq_1q_2}{|\underline r_2-\underline r_1|^3}(\underline r_2-\underline r_1)=q_2\underline E_1`),
+    fsKv('מטען נקודתי', String.raw`\underline E=\frac{kq}{r^2}\hat r,\qquad \varphi=\frac{kq}{r}`),
+    fsKv('פילוג רציף', String.raw`d\underline E=\frac{k\,dq}{\mathcal r^2}\hat{\mathcal r},\qquad dq=\lambda\,dl=\sigma\,dA=\rho\,dV`),
+    fsKv('עבודה', String.raw`W=q\,\Delta\varphi`, 'העבודה הדרושה להזזת מטען בין שתי נקודות'),
+    fsKv('קפיצה במשטח טעון', String.raw`E_\perp^{(2)}-E_\perp^{(1)}=\frac{\sigma}{\varepsilon_0}`, 'השדה על המשטח עצמו: ממוצע השדות משני צדדיו'),
+    fsKv('אנרגיה', String.raw`U=\frac12\int\rho\varphi\,dV=\frac{\varepsilon_0}{2}\int E^2\,dV`),
+  ],
+};
+const FS_P2_TRIANGLE = src => ({
+  title: 'משולש המעברים: ρ, E, φ',
+  blocks: [
+    { t: 'image', src, span: '2' },
+    { t: 'steps', title: 'סד״פ:', items: [
+      '**כיוון:** מ-φ ל-E ל-ρ בגזירה (קל); בכיוון ההפוך באינטגרציה.',
+      String.raw`**אינטגרציה:** $k\,\rho\,dV$ חלקי $r^2$ (ל-$\underline E$) או חלקי $r$ (ל-$\varphi$), עם $\varphi(\infty)=0$.`,
+      '**סימן:** השדה מכוון מפוטנציאל גבוה לנמוך.',
+    ] },
+    { t: 'callout', variant: 'trap', title: 'מלכודות:', items: [
+      String.raw`**שני מינוסים:** $\underline E=-\nabla\varphi$ וגם $\varphi=-\int\underline E\cdot d\underline r$.`,
+      String.raw`**לפלסיאן:** ρ מ-φ היא נגזרת שנייה $\nabla^2\varphi$, לא גרדיאנט.`,
+    ] },
+  ],
+});
+// [section title, label of the block to put them after (null: the end), blocks]
+const FS_P2_ADD = [
+  ['קיבול, התנגדות וזרם', 'חיבור ואנרגיה', [
+    fsKv('זרם', String.raw`I=\frac{dq}{dt}=\int\underline J\cdot d\underline A,\qquad \underline J=nq\underline v=\rho\underline v`),
+    fsKv('רציפות ואוהם', String.raw`\nabla\cdot\underline J=-\frac{\partial\rho}{\partial t},\quad \underline J=\sigma\underline E,\quad V=IR`),
+    fsKv('חיבור נגדים', String.raw`R_{\text{טור}}=\sum R_i,\qquad \frac1{R_{\text{מקביל}}}=\sum\frac1{R_i}`),
+  ]],
+  ['חוק פאראדיי והשראות', 'סלילים קואקסיאליים', [
+    fsKv('השראה עצמית', String.raw`\varepsilon=-L\frac{dI}{dt},\qquad U=\tfrac12LI^2`),
+    fsKv('השראה הדדית', String.raw`\varepsilon_2=-M\frac{dI_1}{dt},\qquad M_{12}=M_{21}`),
+  ]],
+  ['מטען נע: שדה יחסותי וכדור אינפורמציה', 'טרנספורמציית שדה', [
+    fsKv('לורנץ', String.raw`x'=\gamma(x-vt),\quad t'=\gamma\left(t-\frac{v}{c^2}x\right),\quad \gamma=\frac1{\sqrt{1-\beta^2}}`),
+    fsKv('חיבור מהירויות', String.raw`u'_x=\frac{u_x-v}{1-vu_x/c^2},\qquad u'_y=\frac{u_y}{\gamma(1-vu_x/c^2)}`),
+    fsKv('טרנספורמציית E', String.raw`E'_\parallel=E_\parallel,\qquad \underline E'_\perp=\gamma\left(\underline E+\underline v\times\underline B\right)_\perp`),
+    fsKv('טרנספורמציית B', String.raw`B'_\parallel=B_\parallel,\qquad \underline B'_\perp=\gamma\left(\underline B-\tfrac{\underline v}{c^2}\times\underline E\right)_\perp`),
+    fsKv('אינווריאנטים', String.raw`E^2-c^2B^2,\qquad \underline E\cdot\underline B`),
+  ]],
+  ['התאבכות: יאנג, N סדקים, סדק יחיד', 'N סדקים', [
+    fsKv('עוצמה, N סדקים', String.raw`I=I_0\left[\frac{\sin(N\pi d\sin\theta/\lambda)}{\sin(\pi d\sin\theta/\lambda)}\right]^2`),
+  ]],
+  ['התאבכות: יאנג, N סדקים, סדק יחיד', 'סדק יחיד (רוחב a)', [
+    fsKv('עוצמה, סדק יחיד', String.raw`I=I_0\left[\frac{\sin(\pi a\sin\theta/\lambda)}{\pi a\sin\theta/\lambda}\right]^2`, String.raw`מקסימומים משניים: $a\sin\theta\approx(m+\tfrac12)\lambda$`),
+  ]],
+  ['עזר: מקסוול, קואורדינטות, אינטגרלים', 'רוטור', [
+    fsKv('גרדיאנט ודיברגנץ', String.raw`\nabla f=(\partial_xf,\partial_yf,\partial_zf),\quad \nabla\cdot\underline F=\partial_xF_x+\partial_yF_y+\partial_zF_z`),
+    fsKv('לפלסיאן', String.raw`\nabla^2f=\partial_x^2f+\partial_y^2f+\partial_z^2f`),
+    fsKv('משפט גאוס', String.raw`\oint_S\underline F\cdot d\underline A=\int_V\nabla\cdot\underline F\,dV`),
+    fsKv('משפט סטוקס', String.raw`\oint_C\underline F\cdot d\underline l=\int_S(\nabla\times\underline F)\cdot d\underline A`),
+    fsKv('רוטור של רוטור', String.raw`\nabla\times(\nabla\times\underline F)=\nabla(\nabla\cdot\underline F)-\nabla^2\underline F`),
+  ]],
+];
+
+// The tidy-up itself, on a copy of the sections (no saving here). `img` is the triangle picture.
+function fsP2Upgrade(sections, img) {
+  const secs = structuredClone(sections || []);
+  const find = title => secs.find(s => s.title === title);
+  for (const s of secs) {
+    if (FS_P2_TITLES[s.title]) s.title = FS_P2_TITLES[s.title];
+    for (const b of s.blocks || []) {
+      if (b.t === 'callout' && b.title === 'קיר הבושה - מלכודות קריטיות:') b.title = 'מלכודות:';
+      if (b.t === 'steps' && /^סדר פעולות \(סד״פ\):?$/.test(b.title || '')) b.title = 'סד״פ:';
+    }
+  }
+  const consts = find('קבועים');
+  if (consts) for (const b of consts.blocks || []) {
+    if (b.label === 'פרמיטיביות הריק') b.tex = String.raw`\varepsilon_0=8.854\times10^{-12}\ \frac{F}{m}=\frac{C^2}{N\cdot m^2}`;
+    if (b.label === 'חדירות מגנטית') b.tex = String.raw`\mu_0=4\pi\times10^{-7}\approx1.257\times10^{-6}\ \frac{H}{m}`;
+  }
+  const aux = find('עזר: מקסוול, קואורדינטות, אינטגרלים');
+  if (aux && consts) aux.blocks = (aux.blocks || []).filter(b => !(b.t === 'kv' && b.label === 'קבועים'));
+  for (const [title, after, add] of FS_P2_ADD) {
+    const s = find(title);
+    if (!s) continue;
+    const blocks = s.blocks || (s.blocks = []);
+    const fresh = add.filter(n => !blocks.some(b => b.label === n.label)).map(n => structuredClone(n));
+    if (!fresh.length) continue;
+    const at = blocks.findIndex(b => b.label === after);
+    if (after === 'טרנספורמציית שדה' && at >= 0) blocks.splice(at, 1, ...fresh); // the old one-line version is replaced
+    else blocks.splice(at >= 0 ? at + 1 : blocks.length, 0, ...fresh);
+  }
+  // Order: constants, basics, then the rest as it was, with the triangle right after the differential relations.
+  let rest = secs.filter(s => s !== consts);
+  const tri = rest.find(s => s.title === 'משולש המעברים: ρ, E, φ');
+  if (tri && img) { Object.assign(tri, FS_P2_TRIANGLE(img), { id: tri.id }); }
+  if (tri) {
+    rest = rest.filter(s => s !== tri);
+    const at = rest.findIndex(s => s.title === 'קשרים דיפרנציאליים ופואסון');
+    rest.splice(at >= 0 ? at + 1 : rest.length, 0, tri);
+  }
+  const basics = rest.some(s => s.title === FS_P2_BASICS.title) ? [] : [{ id: fsId(), ...structuredClone(FS_P2_BASICS) }];
+  return [...(consts ? [consts] : []), ...basics, ...rest];
+}
+
+let fsP2Busy = false;
+async function fsUpgradeP2() {
+  if (fsP2Busy) return;
+  const todo = fsSheets().filter(s => fsHasContent(s) && (s.extras || []).includes('triangle') && !(s.extras || []).includes('v2'));
+  if (!todo.length) return;
+  fsP2Busy = true;
+  try {
+    const blob = await (await fetch('icons/phys2-triangle.png')).blob();
+    const img = await new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = bad; r.readAsDataURL(blob); });
+    if (!/^data:image\/png/.test(img)) return; // offline or not found: try again next time
+    for (const s of todo) {
+      const cur = fsSheets().find(x => x.id === s.id);
+      if (!cur || (cur.extras || []).includes('v2')) continue;
+      // More pages instead of a smaller font: the student trims it back to 4 pages afterwards.
+      Store.put('sheet', s.id, { sections: fsP2Upgrade(cur.sections, img), extras: [...(cur.extras || []), 'v2'], pages: Math.max(+cur.pages || 4, FS_P2_PAGES) });
+    }
+    toast('📐 הנוסחאון של פיסיקה 2 עודכן: כותרות קצרות, קבועים בהתחלה, תוספות מהנוסחאון הרשמי ושרטוט המשולש');
+  } catch { /* offline: try again next time */ } finally { fsP2Busy = false; }
+}
+const FS_P2_PAGES = 5;

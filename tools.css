@@ -138,7 +138,11 @@ dialog.wide { width: min(980px, 96vw); max-width: 96vw; }
 }
 .fs-page.over { outline: 4px solid #ef4444; }
 .fs-page.over::after { content: "חורג ממספר העמודים"; position: absolute; top: 6px; left: 8px; background: #ef4444; color: #fff; font: 700 12px system-ui; padding: 2px 8px; border-radius: 6px; }
-.fs-cols { display: flex; gap: 16px; height: calc(100% - 20px); }
+.fs-cols { display: flex; gap: 16px; height: calc(100% - 20px); position: relative; }
+/* An image or figure across 2-3 columns: a band at the top of the page, over the first columns (those columns start below it) */
+.fs-band { position: absolute; top: 0; inset-inline-start: 0; }
+.fs-pages .fs-sec.two-lines { background: #fee2e2; box-shadow: 0 0 0 1.5px #ef4444; }
+.fs-pages .fs-sec.two-lines::after { content: " ⚠ כותרת בשתי שורות"; font-size: 9px; color: #b91c1c; font-weight: 700; text-decoration: none; display: inline-block; }
 .fs-col { flex: none; overflow: hidden; }
 .fs-foot { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; font-size: 10px; color: #333; }
 .fs-measure { position: absolute; left: -99999px; top: 0; visibility: hidden; direction: rtl; }
@@ -158,8 +162,13 @@ dialog.wide { width: min(980px, 96vw); max-width: 96vw; }
   border-bottom: 1.6px solid #1f3fbf; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; font-family: inherit;
 }
 .fs-theme-standard .fb-h { font-weight: 700; font-size: 1.1em; margin: .35em 0 .15em; }
-.fs-theme-standard .fb-kv { margin: .12em 0; }
+/* A formula row: the name on the right, the formula on the left (never broken in the middle: when there
+   is no room it moves whole to a line of its own), and the explanation on its own line under them. */
+.fs-theme-standard .fb-kv { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: .5em; margin: .26em 0; }
 .fs-theme-standard .fb-kv > b { font-weight: 700; }
+.fs-theme-standard .fb-kv > .fm { margin-inline-start: auto; white-space: nowrap; }
+.fs-theme-standard .fb-kv > .fb-note { flex-basis: 100%; font-size: .95em; color: #333; padding-inline-start: .9em; }
+.fs-theme-standard .fb-img img { width: 100%; height: auto; display: block; }
 .fs-theme-standard .fb-eq { text-align: center; margin: .3em 0; }
 .fs-theme-standard .fb-eq .katex-display { margin: .2em 0; }
 .fs-theme-standard .fb-text { margin: .15em 0; text-align: justify; }
