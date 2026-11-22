@@ -263,6 +263,7 @@ async function fsLayout(sheet, host) {
     if (token !== fsLayoutToken) break;
     host.replaceChildren(...built.pages);
     if (!host.isConnected) break;
+    if (host.id === 'fsSheet') fsFitPreview(); // the preview is zoomed, and text lays out a little differently when zoomed
     const over = Math.max(0, ...$$('.fs-col', host).map(c => c.scrollHeight - c.clientHeight));
     if (over <= 1) break;
     slack += over + 3;
