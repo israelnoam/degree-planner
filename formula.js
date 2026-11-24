@@ -2390,9 +2390,17 @@ function fsApplyExtras() {
 const FS_PDE_TITLE = 'נוסחאון מד״ח מ׳ (104228)';
 let fsPdeBusy = false;
 async function fsUpgradePde() {
-  if (fsPdeBusy) return;
-  const todo = fsSheets().filter(s => String(s.course) === '104228' && s.title === FS_PDE_TITLE && !(s.extras || []).includes('pde-v2'));
-  if (!todo.length) return;
+  // "pde-v3": 3 pages instead of 2, for a bigger font (asked 2026-11-24). A sheet that already got v2 only changes its pages.
+  const mine = fsSheets().filter(s => String(s.course) === '104228' && s.title === FS_PDE_TITLE);
+  for (const s of mine) {
+    const ex = s.extras || [];
+    if (ex.includes('pde-v2') && !ex.includes('pde-v3')) {
+      Store.put('sheet', s.id, { pages: 3, extras: [...ex, 'pde-v3'] });
+      toast('📐 הנוסחאון של מד״ח הוגדל ל־3 עמודים');
+    }
+  }
+  const todo = mine.filter(s => !(s.extras || []).includes('pde-v2'));
+  if (!todo.length || fsPdeBusy) return;
   fsPdeBusy = true;
   try {
     const fresh = await (await fetch('formula-updates/pde-104228.json')).json();
@@ -2401,11 +2409,11 @@ async function fsUpgradePde() {
       const cur = fsSheets().find(x => x.id === s.id);
       if (!cur || (cur.extras || []).includes('pde-v2')) continue;
       Store.put('sheet', s.id, {
-        sections: fresh.sections, coverage: fresh.coverage, advice: fresh.advice, autofit: fresh.autofit,
-        extras: [...(cur.extras || []), 'pde-v2'],
+        sections: fresh.sections, coverage: fresh.coverage, advice: fresh.advice, autofit: fresh.autofit, pages: 3,
+        extras: [...(cur.extras || []), 'pde-v2', 'pde-v3'],
       });
     }
-    toast('📐 הנוסחאון של מד״ח עודכן לפי הביקורת: פורייה במוסכמת ההרצאה, תיקונים ותוספות');
+    toast('📐 הנוסחאון של מד״ח עודכן לפי הביקורת (3 עמודים): פורייה במוסכמת ההרצאה, תיקונים ותוספות');
     if (currentView === 'formula') render();
   } catch { /* offline: try again next time */ } finally { fsPdeBusy = false; }
 }
