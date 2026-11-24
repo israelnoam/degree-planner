@@ -1436,6 +1436,7 @@ async function importBackup(e) {
 // leave a blank page. The app still draws, and the first error is shown on screen.
 const bootErrors = [];
 const LS_BOOTING = 'pp_booting';
+const LS_FREEZE_SHOWN = 'pp_freeze_shown';
 const VIEW_NAMES = { map: 'מפת קורסים', planner: 'תכנון תואר', tasks: 'משימות', timetable: 'מערכת שעות', tools: 'כלים', cv: 'קורות חיים', formula: 'מחולל נוסחאונים', performance: 'מרכז ביצועים', settings: 'הגדרות' };
 let bootNotice = '';
 function bootStep(name, fn) {
@@ -1490,17 +1491,27 @@ window.addEventListener('DOMContentLoaded', () => {
   // few seconds. If the mark is still there, the last start froze (the page hung), so this
   // time open the course map instead of the screen that froze.
   const froze = lsGet(LS_BOOTING, '');
+  // The notice shows once per freeze: after it has been shown, later starts that still find
+  // a mark open the map quietly, until a start runs cleanly again.
+  const noticeShown = lsGet(LS_FREEZE_SHOWN, '');
   if (froze) {
     console.warn('[boot] last start froze on', froze);
-    if (froze !== 'map') bootNotice = `בפעם הקודמת האפליקציה נתקעה במסך "${VIEW_NAMES[froze] || froze}", אז נפתחה מפת הקורסים. אם זה חוזר במסך הזה, צלם ושלח.`;
-    else bootNotice = 'בפעם הקודמת האפליקציה נתקעה כבר במפת הקורסים. אם זה חוזר, צלם ושלח.';
+    if (!noticeShown) {
+      bootNotice = froze !== 'map'
+        ? `בפעם הקודמת האפליקציה נתקעה במסך "${VIEW_NAMES[froze] || froze}", אז נפתחה מפת הקורסים. אם זה חוזר במסך הזה, צלם ושלח.`
+        : 'בפעם הקודמת האפליקציה נתקעה כבר במפת הקורסים. אם זה חוזר, צלם ושלח.';
+      lsSet(LS_FREEZE_SHOWN, '1');
+    }
     currentView = 'map';
   }
   lsSet(LS_BOOTING, currentView);
-  const bootDone = () => { try { localStorage.removeItem(LS_BOOTING); } catch {} };
-  setTimeout(bootDone, 8000);
-  // Closing or reloading in the first seconds is not a freeze (a frozen page can't run this).
+  const bootDone = () => lsSet(LS_BOOTING, null);
+  // A start that ran for a few seconds is clean, so a later freeze gets its notice again.
+  setTimeout(() => { bootDone(); lsSet(LS_FREEZE_SHOWN, null); }, 8000);
+  // Closing, reloading or hiding the window in the first seconds is not a freeze (a frozen
+  // page can't run this), and a hidden window's timer may never fire before it is closed.
   window.addEventListener('pagehide', bootDone);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) bootDone(); });
   bootStep('first screen', () => go(currentView));
   // If the saved screen failed, fall back to the course map.
   if (!$('#view').children.length) { currentView = 'map'; bootStep('map', () => go('map')); }
