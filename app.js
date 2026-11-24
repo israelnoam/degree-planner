@@ -1229,13 +1229,13 @@ function bindGoogleSection(root) {
   $('#grantMore', root)?.addEventListener('click', () => Sync.authorize());
 
   // Load calendars, color categories and task lists once per visit.
-  const needCal = Sync.hasScope('calendar') && !GCal.calendars && !GCal.lastError;
+  const needCal = Sync.hasScope('calendar') && !GCal.calendarsFresh && !GCal.lastError;
   const needLists = Sync.hasScope('tasks') && settings().tasksSync !== false && !GTasks.lists && !Sync.hookError;
   if (Sync.connected && Sync.token() && (needCal || needLists) && !googleSettingsLoading) {
     googleSettingsLoading = true;
     const rerender = () => { if (currentView === 'settings') render(); };
     const jobs = [];
-    if (needCal) jobs.push(GCal.listCalendars().then(() => GCal.selectedIds()).catch(e => { GCal.lastError = e; }));
+    if (needCal) jobs.push(GCal.listCalendars(true).then(() => GCal.selectedIds()).catch(e => { GCal.lastError = e; }));
     if (needLists) jobs.push(GTasks.fetchLists().catch(e => { Sync.hookError = e; }));
     Promise.all(jobs).finally(() => { googleSettingsLoading = false; rerender(); });
   }

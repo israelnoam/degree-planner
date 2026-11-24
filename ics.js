@@ -182,9 +182,42 @@ function icsExpand(feed, events, from, to) {
   return out;
 }
 
+// Each downloaded calendar is also kept on this device (in the browser's own storage),
+// so the next launch shows it at once and downloads a fresh copy in the background.
+const IcsDB = {
+  db() {
+    this._db ||= new Promise((ok, no) => {
+      const r = indexedDB.open('pp_ics', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('f');
+      r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error);
+    });
+    return this._db;
+  },
+  async tx(mode, fn) {
+    const db = await this.db();
+    return new Promise((ok, no) => { const q = fn(db.transaction('f', mode).objectStore('f')); q.onsuccess = () => ok(q.result); q.onerror = () => no(q.error); });
+  },
+  get(id) { return this.tx('readonly', s => s.get(id)).catch(() => null); },
+  put(id, rec) { return this.tx('readwrite', s => s.put(rec, id)).catch(() => {}); },
+  del(id) { return this.tx('readwrite', s => s.delete(id)).catch(() => {}); },
+};
+const IcsRefreshing = {};
+
 async function icsDownload(feed, force = false) {
-  const c = IcsCache[feed.id];
+  let c = IcsCache[feed.id];
+  if (!c && !force) {
+    const saved = await IcsDB.get(feed.id);
+    if (saved && saved.url === feed.url && Array.isArray(saved.events)) c = IcsCache[feed.id] = saved;
+  }
   if (!force && c && Date.now() - c.at < ICS_TTL) return c.events;
+  if (!force && c) {
+    // An older copy: show it now, and download the new one in the background.
+    if (!IcsRefreshing[feed.id]) {
+      IcsRefreshing[feed.id] = true;
+      icsDownload(feed, true).then(() => GCal.icsRefreshed(), () => {}).finally(() => { IcsRefreshing[feed.id] = false; });
+    }
+    return c.events;
+  }
   const res = await fetch(`${ICS_PROXY}?url=${encodeURIComponent(feed.url)}`, { cache: 'no-store' });
   if (!res.ok) {
     let msg = '';
@@ -192,8 +225,15 @@ async function icsDownload(feed, force = false) {
     throw new Error(msg || `לא הצלחתי להוריד את היומן "${feed.name}" (${res.status})`);
   }
   const events = parseIcs(await res.text());
-  IcsCache[feed.id] = { at: Date.now(), events };
+  IcsCache[feed.id] = { at: Date.now(), url: feed.url, events };
+  IcsDB.put(feed.id, IcsCache[feed.id]);
   return events;
+}
+
+// The linked calendars' events in [from, to) from the copies already downloaded (no network).
+function icsCachedRange(from, to) {
+  if (!icsAvailable()) return [];
+  return icsFeeds().flatMap(feed => (IcsCache[feed.id] ? icsExpand(feed, IcsCache[feed.id].events, from, to) : []));
 }
 
 async function icsFetchRange(from, to, force = false) {
@@ -258,6 +298,7 @@ function bindIcsSection(root) {
   $$('[data-icsdel]', root).forEach(b => b.onclick = () => {
     const before = icsFeeds();
     const gone = before.find(f => f.id === b.dataset.icsdel);
+    IcsDB.del(b.dataset.icsdel);
     Store.put('meta', 'settings', { icsFeeds: before.filter(f => f.id !== b.dataset.icsdel) });
     reset(); Sync.schedule(500); render();
     toast(`היומן "${gone?.name || ''}" הוסר`, () => { Store.put('meta', 'settings', { icsFeeds: before }); reset(); render(); });

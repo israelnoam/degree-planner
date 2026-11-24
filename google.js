@@ -24,8 +24,16 @@ function looksLikeStudy(title) {
 }
 
 // ---------- Calendar ----------
+const LS_CAL_LIST = 'pp_cal_list';
+const LS_CAL_PALETTE = 'pp_cal_palette';
+// Only the event fields the timetable uses: smaller answers from Google.
+const CAL_FIELDS = 'nextPageToken,items(id,status,summary,location,description,htmlLink,start,end,colorId)';
+// All-day dates ("2026-11-24") are local days; timed ones carry their own offset.
+const calMs = s => (s && s.length === 10 ? new Date(`${s}T00:00`).getTime() : Date.parse(s));
+
 const GCal = {
   calendars: null,   // [{id, summary, color, primary}]
+  calendarsFresh: false, // fetched from Google during this visit (not just the saved copy)
   palette: null,     // event colorId -> hex
   weeks: {},         // weekKey -> [events]
   categories: null,  // scan result: [{key, color, count, samples, study}]
@@ -41,27 +49,45 @@ const GCal = {
     try { this.fetchedAt = JSON.parse(lsGet(LS_CAL_CACHE + '_at', '{}')) || {}; } catch { this.fetchedAt = {}; }
   },
   saveCache() {
-    // Keep the 8 most recently fetched weeks for offline use.
-    const keys = Object.keys(this.weeks).sort().slice(-8);
+    // Keep the 12 latest weeks for offline use.
+    const keys = Object.keys(this.weeks).sort().slice(-12);
     lsSet(LS_CAL_CACHE, JSON.stringify(Object.fromEntries(keys.map(k => [k, this.weeks[k]]))));
     lsSet(LS_CAL_CACHE + '_at', JSON.stringify(Object.fromEntries(keys.map(k => [k, this.fetchedAt[k] || 0]))));
   },
 
+  // The list of calendars. The saved copy answers at once (and is refreshed in the
+  // background); `force` always asks Google.
   async listCalendars(force = false) {
     if (this.calendars && !force) return this.calendars;
-    const res = await Sync.api(`${CAL_API}/users/me/calendarList?minAccessRole=reader&maxResults=250`);
+    if (!force) {
+      let saved = null;
+      try { saved = JSON.parse(lsGet(LS_CAL_LIST, 'null')); } catch {}
+      if (Array.isArray(saved) && saved.length) {
+        this.calendars = saved;
+        this.listCalendars(true).catch(() => {});
+        return saved;
+      }
+    }
+    const fields = encodeURIComponent('items(id,summary,summaryOverride,backgroundColor,primary,selected)');
+    const res = await Sync.api(`${CAL_API}/users/me/calendarList?minAccessRole=reader&maxResults=250&fields=${fields}`);
     const { items = [] } = await res.json();
     this.calendars = items.map(c => ({
       id: c.id, summary: c.summaryOverride || c.summary, color: c.backgroundColor, primary: !!c.primary, selected: !!c.selected,
     }));
+    this.calendarsFresh = true;
+    lsSet(LS_CAL_LIST, JSON.stringify(this.calendars));
     return this.calendars;
   },
 
+  // Google's fixed event colors: fetched once, then kept on this device.
   async loadPalette() {
+    if (this.palette) return this.palette;
+    try { this.palette = JSON.parse(lsGet(LS_CAL_PALETTE, 'null')); } catch {}
     if (this.palette) return this.palette;
     const res = await Sync.api(`${CAL_API}/colors`);
     const { event = {} } = await res.json();
     this.palette = Object.fromEntries(Object.entries(event).map(([id, c]) => [id, c.background]));
+    lsSet(LS_CAL_PALETTE, JSON.stringify(this.palette));
     return this.palette;
   },
 
@@ -75,9 +101,9 @@ const GCal = {
     return on.length ? on : cals.filter(c => c.primary).map(c => c.id);
   },
 
-  async fetchRange(from, to, force = false) {
-    const ics = icsFetchRange(from, to, force);
-    if (!this.googleReady()) return ics;
+  // Google Calendar events in [from, to).
+  async fetchGoogle(from, to) {
+    if (!this.googleReady()) return [];
     const [ids, cals, palette] = await Promise.all([this.selectedIds(), this.listCalendars(), this.loadPalette()]);
     const lists = await Promise.all(ids.map(async id => {
       const cal = cals.find(c => c.id === id);
@@ -86,7 +112,7 @@ const GCal = {
       do {
         const q = new URLSearchParams({
           timeMin: from.toISOString(), timeMax: to.toISOString(),
-          singleEvents: 'true', orderBy: 'startTime', maxResults: '2500',
+          singleEvents: 'true', orderBy: 'startTime', maxResults: '2500', fields: CAL_FIELDS,
         });
         if (pageToken) q.set('pageToken', pageToken);
         const res = await Sync.api(`${CAL_API}/calendars/${encodeURIComponent(id)}/events?${q}`);
@@ -109,7 +135,12 @@ const GCal = {
         color: (e.colorId && palette[e.colorId]) || cal?.color || '#4ea1ff',
       }));
     }));
-    return [...lists.flat(), ...await ics];
+    return lists.flat();
+  },
+
+  async fetchRange(from, to, force = false) {
+    const [g, ics] = await Promise.all([this.fetchGoogle(from, to), icsFetchRange(from, to, force)]);
+    return [...g, ...ics];
   },
 
   // Looks at ~10 weeks of events and groups them by color, guessing which
@@ -137,32 +168,62 @@ const GCal = {
     return Array.isArray(chosen) ? chosen : null;
   },
 
-  // Fetches one week (Sunday..Saturday). Calls onUpdate when fresh data arrives.
+  // Puts one source's events (Google, or the linked calendars) into each of the given
+  // weeks, keeping the other source's events there as they are. True if anything changed.
+  placeEvents(weekStarts, events, isIcs) {
+    let changed = false;
+    for (const w of weekStarts) {
+      const key = ymd(w), a = w.getTime(), b = addDays(w, 7).getTime();
+      const mine = events.filter(e => calMs(e.start) < b && calMs(e.end || e.start) > a);
+      const other = (this.weeks[key] || []).filter(e => String(e.cat).startsWith('ics:') !== isIcs);
+      const next = isIcs ? [...other, ...mine] : [...mine, ...other];
+      if (JSON.stringify(next) === JSON.stringify(this.weeks[key])) continue;
+      this.weeks[key] = next;
+      changed = true;
+    }
+    if (changed) this.saveCache();
+    return changed;
+  },
+
+  // A linked calendar finished downloading in the background: redo its part of the saved weeks.
+  icsRefreshed() {
+    const weeks = Object.keys(this.weeks).sort().filter(k => !this.loading[k]).map(k => new Date(`${k}T00:00`));
+    if (!weeks.length) return;
+    const changed = this.placeEvents(weeks, icsCachedRange(weeks[0], addDays(weeks.at(-1), 7)), true);
+    if (changed && typeof currentView !== 'undefined' && currentView === 'timetable') render();
+  },
+
+  // Fetches the week (Sunday..Saturday) together with the weeks before and after it, so
+  // moving between them is instant. Google's events are shown as soon as they arrive,
+  // without waiting for the linked calendars. Calls onUpdate whenever something new shows.
   async fetchWeek(weekStart, onUpdate, force = false) {
     const key = ymd(weekStart);
     if (!this.ready() || this.loading[key]) return;
     // Each week is fetched once a day (or when you press refresh); otherwise the saved copy is shown.
     if (!force && this.fetchedAt[key] && ymd(new Date(this.fetchedAt[key])) === ymd(new Date())) return;
-    this.loading[key] = true;
-    try {
-      const end = new Date(weekStart); end.setDate(end.getDate() + 7);
-      const events = await this.fetchRange(weekStart, end, force);
-      const changed = JSON.stringify(events) !== JSON.stringify(this.weeks[key]);
-      this.weeks[key] = events;
-      this.fetchedAt[key] = Date.now();
-      const hadError = !!this.lastError;
+    const weeks = [addDays(weekStart, -7), weekStart, addDays(weekStart, 7)];
+    const keys = weeks.map(ymd);
+    for (const k of keys) this.loading[k] = true;
+    const from = weeks[0], to = addDays(weekStart, 14);
+    const hadError = !!this.lastError;
+    const place = isIcs => events => { if (this.placeEvents(weeks, events, isIcs)) onUpdate?.(); };
+    const results = await Promise.allSettled([
+      this.fetchGoogle(from, to).then(place(false)),
+      icsFetchRange(from, to, force).then(place(true)),
+    ]);
+    // Pause until the next launch even after an error; errors aren't saved, so it retries then.
+    for (const k of keys) { this.fetchedAt[k] = Date.now(); this.loading[k] = false; }
+    this.saveCache();
+    const e = results.find(r => r.status === 'rejected')?.reason;
+    if (!e) {
       this.lastError = null;
-      this.saveCache();
-      if (changed || hadError) onUpdate?.();
-    } catch (e) {
-      const isNew = this.lastError?.message !== e.message;
-      this.lastError = e;
-      this.fetchedAt[key] = Date.now(); // pause until the next launch; errors aren't saved, so it retries then
-      if (e.auth) Sync.setState('needs-auth', 'פג תוקף החיבור');
-      else if (isNew) onUpdate?.();
-    } finally {
-      this.loading[key] = false;
+      if (hadError) onUpdate?.();
+      return;
     }
+    const isNew = this.lastError?.message !== e.message;
+    this.lastError = e;
+    if (e.auth) Sync.setState('needs-auth', 'פג תוקף החיבור');
+    else if (isNew) onUpdate?.();
   },
 
   eventsFor(weekStart) {
@@ -197,13 +258,20 @@ function toGoogleTask(t, inCourseList) {
   return g;
 }
 
+function guessTaskType(title) {
+  return /מבחן|מועד/.test(title) ? 'exam' : /בוחן/.test(title) ? 'quiz'
+    : /הגש|גיליון|תרגיל|ש"ב|שיעורי|מטל/.test(title) ? 'hw'
+    : /פרויקט|מעבדה|דוח/.test(title) ? 'project' : 'other';
+}
+
 function fromGoogleTask(g, existing = {}, listCourse = '') {
   let title = g.title || '';
   let type = existing.type || '';
   for (const [k, v] of Object.entries(TASK_TYPES)) {
     if (title.startsWith(v.icon)) { type = k; title = title.slice(v.icon.length).trim(); break; }
   }
-  if (!type) type = /מבחן|מועד/.test(title) ? 'exam' : /בוחן/.test(title) ? 'quiz' : /גיליון|תרגיל|ש"ב|שיעורי/.test(title) ? 'hw' : /פרויקט|מעבדה|דוח/.test(title) ? 'project' : 'other';
+  // Guess from the title when there's no type yet, or it was filed as "other" (an older guess may have missed it).
+  if (!type || type === 'other') type = guessTaskType(title);
   let notes = g.notes || '';
   let course = listCourse || existing.course || '';
   if (notes.startsWith(COURSE_PREFIX)) {
@@ -338,6 +406,14 @@ const GTasks = {
       changed = true;
     }
     if (changed) Store.persist();
+
+    // Tasks filed as "other" whose title now reads as a known type (e.g. "הגשה" → homework):
+    // fix them here, and the push below updates their icon in Google too.
+    for (const r of Object.values(Store.recs)) {
+      if (r.kind !== 'task' || r.del || r.type !== 'other') continue;
+      const type = guessTaskType(r.title || '');
+      if (type !== 'other') { Store.put('task', r.id, { type }); changed = true; }
+    }
 
     const byId = {};
     for (const listId of synced) {
