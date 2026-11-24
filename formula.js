@@ -2379,6 +2379,35 @@ function fsApplyExtras() {
   }
   if (added) toast(`נוספו לנוסחאון של פיסיקה 2: קבועים בסיסיים ומשולש המעברים`);
   fsUpgradeP2();
+  fsUpgradePde();
+}
+
+// ---------- one-time update of the PDE sheet (104228), from the review of 2026-11-23 ----------
+// Fourier transform in the lecture's convention, the J in the quasi-linear example, no references to examples
+// that are not on the sheet, delta / J / triangle notation, and the additions the review asked for.
+// The official sheet is not given in the exam, so nothing is hidden. Replaces the sheet's content once
+// ("pde-v2" in its extras); only the sheet that was reviewed (by its title), so other PDE sheets are left alone.
+const FS_PDE_TITLE = 'נוסחאון מד״ח מ׳ (104228)';
+let fsPdeBusy = false;
+async function fsUpgradePde() {
+  if (fsPdeBusy) return;
+  const todo = fsSheets().filter(s => String(s.course) === '104228' && s.title === FS_PDE_TITLE && !(s.extras || []).includes('pde-v2'));
+  if (!todo.length) return;
+  fsPdeBusy = true;
+  try {
+    const fresh = await (await fetch('formula-updates/pde-104228.json')).json();
+    if (!Array.isArray(fresh.sections) || !fresh.sections.length) return; // offline or not found: try again next time
+    for (const s of todo) {
+      const cur = fsSheets().find(x => x.id === s.id);
+      if (!cur || (cur.extras || []).includes('pde-v2')) continue;
+      Store.put('sheet', s.id, {
+        sections: fresh.sections, coverage: fresh.coverage, advice: fresh.advice, autofit: fresh.autofit,
+        extras: [...(cur.extras || []), 'pde-v2'],
+      });
+    }
+    toast('📐 הנוסחאון של מד״ח עודכן לפי הביקורת: פורייה במוסכמת ההרצאה, תיקונים ותוספות');
+    if (currentView === 'formula') render();
+  } catch { /* offline: try again next time */ } finally { fsPdeBusy = false; }
 }
 
 // ---------- one-time tidy-up of the Physics 2 sheet (agreed with the student, 2026-11-22) ----------
